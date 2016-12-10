@@ -282,15 +282,28 @@
                                                       (update acc v (fnil conj []) k))
                                                     {}
                                                     all-node-to-layer))
-   :layer-to-nodes                     (fnk [unsorted-layer-to-nodes]
-                                         (map-vals (fn [nodes]
-                                                     (vec (sort-by (fn [x] (if (map? x)
-                                                                             [(:src x) (:dest x)]
-                                                                             [x nil]))
-                                                                   nodes)))
-                                                   unsorted-layer-to-nodes))
-   :height                             (fnk [layer-to-nodes]
-                                         (count layer-to-nodes))
+   :layer-to-nodes                     (fnk [dummy-graph unsorted-layer-to-nodes all-node-to-layer height]
+                                         (let [top-level-nodes (keep (fn [[node layer]]
+                                                                       (when (= (dec height) layer)
+                                                                         node))
+                                                                     all-node-to-layer)]
+                                           (->> top-level-nodes
+                                                (reduce (fn [layer->nodes top-level-node]
+                                                          (let [bf-traversal (alg/bf-traverse dummy-graph top-level-node)]
+                                                            (reduce (fn [layer->nodes node]
+                                                                      (update layer->nodes (get all-node-to-layer node) (fnil conj []) node))
+                                                                    layer->nodes
+                                                                    bf-traversal)))
+                                                        {})
+                                                (map-vals (partial into [] (distinct)))))
+                                         #_(map-vals (fn [nodes]
+                                                       (vec (sort-by (fn [x] (if (map? x)
+                                                                               [(:src x) (:dest x)]
+                                                                               [x nil]))
+                                                                     nodes)))
+                                                     unsorted-layer-to-nodes))
+   :height                             (fnk [unsorted-layer-to-nodes]
+                                         (count unsorted-layer-to-nodes))
    :vertices-incident-to-inner-segment (fnk [dummies dummy-graph]
                                          ; dummy nodes have an out-degree of 1
                                          ; and the proper layering of the graph
@@ -475,23 +488,23 @@
                                              up-right-aligned
                                              down-right-aligned
                                              y-coordinates]
-                                         (into {}
-                                               (map (fn [[n x]]
-
-                                                      [n {:x x
-                                                          :y (get y-coordinates n)}])
-                                                    up-right-aligned))
                                          #_(into {}
                                                  (map (fn [[n x]]
-                                                        (let [[_ x1 x2 _] (sort (cons x
-                                                                                      (map (fn [alignment]
-                                                                                             (get alignment n))
-                                                                                           [down-left-aligned
-                                                                                            up-right-aligned
-                                                                                            down-right-aligned])))]
-                                                          [n {:x (/ (+ x1 x2) 2)
-                                                              :y (get y-coordinates n)}]))
-                                                      up-left-aligned)))
+
+                                                        [n {:x x
+                                                            :y (get y-coordinates n)}])
+                                                      up-right-aligned))
+                                         (into {}
+                                               (map (fn [[n x]]
+                                                      (let [[_ x1 x2 _] (sort (cons x
+                                                                                    (map (fn [alignment]
+                                                                                           (get alignment n))
+                                                                                         [down-left-aligned
+                                                                                          up-right-aligned
+                                                                                          down-right-aligned])))]
+                                                        [n {:x (/ (+ x1 x2) 2)
+                                                            :y (get y-coordinates n)}]))
+                                                    up-left-aligned)))
    :min-x-coordinate                   (fnk [xy-coordinates-centered]
                                          (->> xy-coordinates-centered
                                               (vals)
