@@ -9,9 +9,9 @@
              :refer-macros [fnk]]
             [clojure.set :as set]))
 
-(defn get-node-index [layer-i-nodes upper-neighbor]
+(defn get-node-index [layer-i-nodes neighbor]
   (->> layer-i-nodes
-       (keep-indexed (fn [idx node] (when (= node upper-neighbor)
+       (keep-indexed (fn [idx node] (when (= node neighbor)
                                       idx)))
        (first)))
 
@@ -214,6 +214,161 @@
     {:inner-shift @v->inner-shift
      :block-size  @root->block-size}))
 
+(defn adjacent-indices [next-layer neighbours]
+  (into [] (sort (map (partial get-node-index next-layer) neighbours))))
+
+(defn median-neighbor-index [neighbor-indices]
+  (let [number-neighbors (count neighbor-indices)
+        m (/ number-neighbors 2)]
+    (cond (zero? number-neighbors)
+          -1
+          (= (mod number-neighbors 2) 1)
+          (get neighbor-indices m)
+          (= number-neighbors 2)
+          (/ (+ (get neighbor-indices 0) (get neighbor-indices 1))
+             2)
+          :else
+          (let [left (- (get neighbor-indices (dec m)) (get neighbor-indices 0))
+                right (- (get neighbor-indices (dec number-neighbors)) (get neighbor-indices m))]
+            (/ (+ (* (get neighbor-indices (dec m)) right)
+                  (* (get neighbor-indices m) left))
+               (+ left right))))))
+
+(defn map-comparator [m]
+  (fn [n1 n2]
+    (let [c (compare (get m n1)
+                     (get m n2))]
+      (if (zero? c)
+        (cond (and (string? n1) (string? n2))
+              (compare n1 n2)
+              :else
+              (compare (str n1) (str n2)))
+        c))))
+
+(defn sort-with-fixed-positions [v->median-neighbor-index layer]
+  (let [fixed-positions (into #{}
+                              (filter (fn [v]
+                                        (= -1 (get v->median-neighbor-index v))))
+                              layer)
+        sorted-rest (sort-by
+                      v->median-neighbor-index
+                      (set/difference (set layer)
+                                      fixed-positions))]
+    (loop [[v & vs] layer
+           sorted sorted-rest
+           result []]
+      (if (not v)
+        result
+        (let [fixed? (contains? fixed-positions v)
+              [next-node remaining-sorted]
+              (if fixed?
+                [v sorted]
+                (let [next-node (first sorted)]
+                  [next-node (rest sorted)]))]
+          (recur vs
+                 remaining-sorted
+                 (conj result next-node)))))))
+
+(defn weighted-median-sorted [ordering layer-indices next-layer-fn neighbours-fn]
+  (let [v->median-neighbor-index
+        (into {} (for [r layer-indices :let [next-layer (get ordering (next-layer-fn r))]
+                       v (get ordering r)]
+                   [v (median-neighbor-index (adjacent-indices next-layer (neighbours-fn v)))]))]
+    (map-vals (fn [layer]
+                (sort-with-fixed-positions v->median-neighbor-index layer))
+              ordering)))
+
+(defn crossing-count [g order layer-index]
+  (let [layer (get order layer-index)
+        succ-layer (get order (dec layer-index))]
+    (->> layer
+         (reduce (fn [{:keys [prevs cross-count]} node]
+                   (let [succs-indices (map (partial get-node-index succ-layer) (graph/successors g node))]
+                     (println "succsi" succs-indices "layer" layer "node" node "succ-layer" succ-layer)
+                     {:prevs       (reduce (fn [acc succ-index]
+                                             (update acc succ-index (fnil inc 0)))
+                                           prevs
+                                           succs-indices)
+                      :cross-count (reduce +
+                                           cross-count
+                                           (map (fn [succ-index]
+                                                  (reduce + (keep (fn [[i occurences]]
+                                                                    (when (< succ-index i)
+                                                                      occurences))
+                                                                  prevs)))
+                                                succs-indices))}))
+                 {:prevs       {}
+                  :cross-count 0})
+         (:cross-count))))
+
+(defn crossing-count-for-layers [g order layers]
+  (reduce + (map (partial crossing-count g order) layers)))
+
+(defn crossing-count-involving-layer [g height order r]
+  (crossing-count-for-layers g order (range (max (dec height) (inc r)) (dec r) -1)))
+
+(defn crossing-count-for-ordering [g height order]
+  (crossing-count-for-layers g order (range (dec height) 0 -1)))
+
+(defn transpose [g height ordering]
+  (let [improved (atom true)
+        order (atom ordering)]
+    (while @improved
+      (reset! improved false)
+      (doall (for [r (range 0 height)
+             [v w] (partition 2 1 (get @order r))]
+         (do (println "layer" r "v w" [v w])
+             (when (> (crossing-count-involving-layer g height @order r)
+                      (crossing-count-involving-layer g height (update @order r (partial replace {v w, w v})) r))
+               (println "better after replacement: " (crossing-count-involving-layer g height (update @order r (partial replace {v w, w v})) r))
+               (reset! improved true)
+               (swap! order update r (partial replace {v w, w v})))))))
+    @order))
+
+(defn alternating-directions [dummy-graph height i]
+  (if (even? i)
+    ;; the dummy-graph only has short edges
+    ;; thus all neighbours are in the next/previous layer
+    [(range (- height 2) -1 -1) inc (partial graph/predecessors dummy-graph)]
+    [(range 1 height) dec (partial graph/successors dummy-graph)]))
+
+(def crossing-minimization-graph
+  {:initial-order
+   (fnk [dummy-graph all-node-to-layer height]
+     (let [top-level-nodes (keep (fn [[node layer]]
+                                   (when (= (dec height) layer)
+                                     node))
+                                 all-node-to-layer)]
+       (->> top-level-nodes
+            (reduce (fn [layer->nodes top-level-node]
+                      (let [bf-traversal (alg/bf-traverse dummy-graph top-level-node)]
+                        (reduce (fn [layer->nodes node]
+                                  (update layer->nodes (get all-node-to-layer node) (fnil conj []) node))
+                                layer->nodes
+                                bf-traversal)))
+                    {})
+            (map-vals (partial into [] (distinct))))))
+   :ordering
+   (fnk [initial-order height dummy-graph]
+     (loop [i 0
+            best initial-order]
+       (if (>= i 24)
+         best
+         (let [[layer-indices next-layer-fn neighbours-fn]
+               (alternating-directions dummy-graph height i)
+               order (weighted-median-sorted best layer-indices next-layer-fn neighbours-fn)
+               transposed-order (transpose dummy-graph height order)]
+           (println "ordering orderingdingding")
+           (if (< (crossing-count-for-ordering dummy-graph height transposed-order)
+                  (crossing-count-for-ordering dummy-graph height best))
+             (recur (inc i) transposed-order)
+             (recur (inc i) best))))))
+   :layer-to-nodes
+   (fnk [ordering initial-order]
+     initial-order
+     ;ordering
+     )})
+
 (def layout-graph
   {:topology-sorted                    (fnk [g]
                                          (alg/topsort g))
@@ -282,26 +437,10 @@
                                                       (update acc v (fnil conj []) k))
                                                     {}
                                                     all-node-to-layer))
-   :layer-to-nodes                     (fnk [dummy-graph unsorted-layer-to-nodes all-node-to-layer height]
-                                         (let [top-level-nodes (keep (fn [[node layer]]
-                                                                       (when (= (dec height) layer)
-                                                                         node))
-                                                                     all-node-to-layer)]
-                                           (->> top-level-nodes
-                                                (reduce (fn [layer->nodes top-level-node]
-                                                          (let [bf-traversal (alg/bf-traverse dummy-graph top-level-node)]
-                                                            (reduce (fn [layer->nodes node]
-                                                                      (update layer->nodes (get all-node-to-layer node) (fnil conj []) node))
-                                                                    layer->nodes
-                                                                    bf-traversal)))
-                                                        {})
-                                                (map-vals (partial into [] (distinct)))))
-                                         #_(map-vals (fn [nodes]
-                                                       (vec (sort-by (fn [x] (if (map? x)
-                                                                               [(:src x) (:dest x)]
-                                                                               [x nil]))
-                                                                     nodes)))
-                                                     unsorted-layer-to-nodes))
+   :crossing-minimized-layer-to-nodes  crossing-minimization-graph
+   :layer-to-nodes                     (fnk [crossing-minimized-layer-to-nodes]
+                                         (:layer-to-nodes crossing-minimized-layer-to-nodes))
+
    :height                             (fnk [unsorted-layer-to-nodes]
                                          (count unsorted-layer-to-nodes))
    :vertices-incident-to-inner-segment (fnk [dummies dummy-graph]

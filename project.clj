@@ -19,4 +19,5 @@
   [["clojars" {:url "https://clojars.org/repo/"}]
    ["maven-central" {:url "https://repo1.maven.org/maven2"}]]
   :source-paths
-  ["src/cljs" "resources"])
+  ["src/cljs" "resources"]
+  :test-paths ["test"])
