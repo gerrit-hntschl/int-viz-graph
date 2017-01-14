@@ -130,7 +130,16 @@
              (println "edge" edge)
              (let [node-coordinates (get (::all-edges state) edge)]
                (when (seq node-coordinates)
-                 (condp = (count node-coordinates)
+                 [:polyline {:key        (str edge)
+                             :id         (str edge)
+                             :marker-end "url(#arrow)"
+                             :fill       "none"
+                             :stroke     "black"
+                             :points     (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
+                                                            node-coordinates))
+                             :style      {:stroke       "#000000"
+                                          :stroke-width 1}}]
+                 #_(condp = (count node-coordinates)
                    2 [:polyline {:key        (str edge)
                                  :id         (str edge)
                                  :marker-end "url(#arrow)"
@@ -458,18 +467,16 @@
                                                           {:width  (->> xy-coordinates (vals) (map :x) (apply max))
                                                            :height (->> xy-coordinates (vals) (map :y) (apply max))})})
 
-#_(def missing-users-graph
+(def missing-users-graph
   ;; input -> import-usernames-all & dbval & jira
   {:db-usernames-all                 (fnk [dbval]
-                                       (all-usernames dbval))
+                                       )
    :import-usernames-new           (fnk [import-usernames-all db-usernames-all]
-                                     (set/difference import-usernames-all db-usernames-all))
+                                     )
    :jira-users-new                   (fnk [jira import-usernames-new]
-                                       (when (not-empty import-usernames-new)
-                                         (users jira import-usernames-new)))
+                                       )
    :domain-users-new                 (fnk [jira-users-new]
-                                       (mapv to-db-user
-                                             jira-users-new))})
+                                       )})
 
 #_(def example-graph
   ;; input:
@@ -478,84 +485,69 @@
   ;; jira :- Jira Client implementation
   (merge
     {:re-import?           (fnk [dbval]
-                             (boolean (any-work-date dbval)))
+                             )
      :current-period-start (fnk [today]
-                             (domain/current-period-start today))
+                             )
      :import-start-date    (fnk [re-import? today current-period-start]
-                             (if re-import?
-                               current-period-start
-                               (time/first-day-of-the-month (time/year today) 1)))
+                             )
      :import-end-date      (fnk [today]
-                             (time/local-date (time/year today) 12 31))
+                             )
      :worklogs-retrieved   (fnk [jira import-start-date import-end-date]
                              ;; returns a map containing all intermediate state used to retrieve actual worklogs
                              ;; other entries are not used, but useful for debugging
-                             (worklogs jira import-start-date import-end-date))
+                             )
      :worklogs-all         (fnk worklogs-all
                              [worklogs-retrieved]
                              ;; simplify access to actual worklogs
-                             (:worklogs worklogs-retrieved))
+                             )
      :import-usernames-all (fnk [worklogs-all]
-                             (into #{} (map :username) worklogs-all))}
+                             )}
     missing-users-graph
     {:jira-usernames-new               (fnk [jira-users-new]
                                          (into #{} (map :name) jira-users-new))
      :worklogs-usernames-unknown       (fnk [jira-usernames-new import-usernames-new]
-                                         (set/difference import-usernames-new jira-usernames-new))
+                                         )
      :issue-ids-all                    (fnk [worklogs-all]
-                                         (into #{} (map :issue_id) worklogs-all))
+                                         )
      :db-ticket-ids-all                (fnk [dbval]
-                                         (all-domain-ticket-ids dbval))
+                                         )
      :issue-ids-new                    (fnk [issue-ids-all db-ticket-ids-all]
-                                         (set/difference issue-ids-all db-ticket-ids-all))
+                                         )
      :issues-new-parsed-json           (fnk [jira issue-ids-new]
-                                         (issues jira issue-ids-new))
+                                         )
      :issues-new-coerced               (fnk [issues-new-parsed-json]
-                                         (mapv model/to-jira-issue
-                                               issues-new-parsed-json))
+                                         )
      :tickets-new                      (fnk [issues-new-coerced]
-                                         (mapv jira-issue-to-datomic-ticket issues-new-coerced))
+                                         )
      :db-customer-ids-all              (fnk [dbval]
-                                         (all-domain-customer-ids dbval))
+                                         )
      ;; can the component of a jira issue change? here we assume that only new issues can introduce new components
      :jira-customers-new               (fnk [issues-new-coerced]
-                                         (distinct (mapv extract-customer-from-jira-issue issues-new-coerced)))
+                                         )
      :jira-customer-ids                (fnk [jira-customers-new]
-                                         (into #{} (map :id) jira-customers-new))
+                                         )
      :customer-ids-new                 (fnk [db-customer-ids-all jira-customer-ids]
-                                         (set/difference jira-customer-ids db-customer-ids-all))
+                                         )
      :domain-customers-new             (fnk [customer-ids-new jira-customers-new]
-                                         (mapv jira-component-to-datomic-customer
-                                               (filter (comp customer-ids-new :id) jira-customers-new)))
+                                         )
      :worklogs-known-usernames         (fnk [worklogs-all worklogs-usernames-unknown]
-                                         (remove (comp worklogs-usernames-unknown :username) worklogs-all))
+                                         )
      :db-worklog-ids-in-import-range   (fnk [re-import? dbval import-start-date import-end-date]
-                                         (when re-import?
-                                           (all-domain-worklog-ids-in-range dbval
-                                                                            (time-coerce/to-date import-start-date)
-                                                                            (time-coerce/to-date import-end-date))))
+                                         )
      :jira-worklog-ids-in-import-range (fnk [worklogs-known-usernames]
-                                         (into #{} (map :worklog_id) worklogs-known-usernames))
+                                         )
      :jira-worklog-ids-deleted         (fnk [re-import? db-worklog-ids-in-import-range jira-worklog-ids-in-import-range]
-                                         (if re-import?
-                                           (set/difference db-worklog-ids-in-import-range jira-worklog-ids-in-import-range)
-                                           #{}))
+                                         )
      :domain-worklogs-new              (fnk [worklogs-known-usernames]
-                                         (mapv jira-worklog-to-datomic-worklog worklogs-known-usernames))
+                                         )
      :domain-worklogs-deleted          (fnk [jira-worklog-ids-deleted]
-                                         (mapv worklog-retraction jira-worklog-ids-deleted))
+                                         )
      :domain-worklogs-transaction      (fnk [domain-worklogs-new domain-worklogs-deleted]
-                                         (concat domain-worklogs-new domain-worklogs-deleted))
+                                         )
      :db-transactions                  (fnk [domain-users-new domain-customers-new tickets-new domain-worklogs-transaction]
-                                         (remove empty?
-                                                 (vector domain-users-new
-                                                         domain-customers-new
-                                                         tickets-new
-                                                         domain-worklogs-transaction)))
+                                         )
      :db-transactions-stats            (fnk [domain-users-new domain-customers-new tickets-new domain-worklogs-deleted domain-worklogs-new]
-                                         (zipmap [:new-users :new-customers :new-tickets :deleted-worklogs :worklogs-in-period]
-                                                 (map count
-                                                      [domain-users-new domain-customers-new tickets-new domain-worklogs-deleted domain-worklogs-new])))}))
+                                         )}))
 
 #_(def example-graph {:x             (fnk [a]
                                      (+ a 5))
@@ -588,7 +580,7 @@
                     :x (fnk [e f] (/ e f))})
 
 
-(def example-graph {:a03 (fnk [x01 x02])
+#_(def example-graph {:a03 (fnk [x01 x02])
                     :x04 (fnk [x01 a03])
                     :x05 (fnk [a03])
                     :x06 (fnk [x04])
@@ -611,6 +603,28 @@
                     ;:x23 (fnk [x03 x06 x21 x22])
                     })
 
+(def example-graph {:x03 (fnk [x01 x02])
+                    :x04 (fnk [x01 x03])
+                    :x05 (fnk [x03])
+                    :x06 (fnk [x04])
+                    :x07 (fnk [x05])
+                    :x08 (fnk [x06])
+                    :x09 (fnk [x07])
+                    :x10 (fnk [x08])
+                    :x11 (fnk [x08])
+                    :x12 (fnk [x09])
+                    :x13 (fnk [x01 x10])
+                    :x14 (fnk [x10])
+                    :x15 (fnk [x10 x11])
+                    :x16 (fnk [x06 x11])
+                    :x17 (fnk [x13 x14])
+                    :x18 (fnk [x14 x16])
+                    :x19 (fnk [x16])
+                    :x20 (fnk [x12 x16 x02])
+                    :x21 (fnk [x01 x18])
+                    :x22 (fnk [x19])
+                    :x23 (fnk [x03 x06 x21 x22])
+                    })
 
 
 (defn get-graph-nodes [g]
