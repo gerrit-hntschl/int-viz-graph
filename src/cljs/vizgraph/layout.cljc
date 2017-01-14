@@ -214,12 +214,17 @@
     {:inner-shift @v->inner-shift
      :block-size  @root->block-size}))
 
-(defn adjacent-indices [next-layer neighbours]
+(defn adjacent-indices [next-layer neighbours v]
+  {:post [(or (not-any? nil? %)
+               (throw (ex-info "nil index neighbor" {:neighbors neighbours
+                                                     :next-layer next-layer
+                                                     :v v})))]}
   (into [] (sort (map (partial get-node-index next-layer) neighbours))))
 
 (defn median-neighbor-index [neighbor-indices]
+  {:post [(not (nil? %))]}
   (let [number-neighbors (count neighbor-indices)
-        m (/ number-neighbors 2)]
+        m (int (/ number-neighbors 2))]
     (cond (zero? number-neighbors)
           -1
           (= (mod number-neighbors 2) 1)
@@ -234,18 +239,11 @@
                   (* (get neighbor-indices m) left))
                (+ left right))))))
 
-(defn map-comparator [m]
-  (fn [n1 n2]
-    (let [c (compare (get m n1)
-                     (get m n2))]
-      (if (zero? c)
-        (cond (and (string? n1) (string? n2))
-              (compare n1 n2)
-              :else
-              (compare (str n1) (str n2)))
-        c))))
-
 (defn sort-with-fixed-positions [v->median-neighbor-index layer]
+  {:pre [(or (every? v->median-neighbor-index layer)
+             (throw (ex-info (str "node in layer without sort order:" (seq (remove v->median-neighbor-index layer)))
+                             {:median-indices v->median-neighbor-index
+                              :layer          layer})))]}
   (let [fixed-positions (into #{}
                               (filter (fn [v]
                                         (= -1 (get v->median-neighbor-index v))))
@@ -254,6 +252,7 @@
                       v->median-neighbor-index
                       (set/difference (set layer)
                                       fixed-positions))]
+    (prn "sorted-rest" sorted-rest)
     (loop [[v & vs] layer
            sorted sorted-rest
            result []]
@@ -273,10 +272,19 @@
   (let [v->median-neighbor-index
         (into {} (for [r layer-indices :let [next-layer (get ordering (next-layer-fn r))]
                        v (get ordering r)]
-                   [v (median-neighbor-index (adjacent-indices next-layer (neighbours-fn v)))]))]
+                   (do (println "adja" (adjacent-indices next-layer (neighbours-fn v) v)
+                                "neighs" (neighbours-fn v)
+                                "v" v)
+                       [v (median-neighbor-index (adjacent-indices next-layer (neighbours-fn v) v))])))]
+    (println "medneiind" v->median-neighbor-index)
+    #_(println "x04" (get v->median-neighbor-index "x04")
+             "x05" (get v->median-neighbor-index "x05")
+             "<" (< (get v->median-neighbor-index "x04")
+                    (get v->median-neighbor-index "x05")))
     (map-vals (fn [layer]
                 (sort-with-fixed-positions v->median-neighbor-index layer))
               ordering)))
+
 
 (defn crossing-count [g order layer-index]
   (let [layer (get order layer-index)
@@ -284,7 +292,11 @@
     (->> layer
          (reduce (fn [{:keys [prevs cross-count]} node]
                    (let [succs-indices (map (partial get-node-index succ-layer) (graph/successors g node))]
-                     (println "succsi" succs-indices "layer" layer "node" node "succ-layer" succ-layer)
+                     (when (some nil? succs-indices)
+                       (throw (ex-info "successor without index"
+                                       {:succs-indices succs-indices
+                                        :node node
+                                        :succs (graph/successors g node)})))
                      {:prevs       (reduce (fn [acc succ-index]
                                              (update acc succ-index (fnil inc 0)))
                                            prevs
@@ -305,7 +317,8 @@
   (reduce + (map (partial crossing-count g order) layers)))
 
 (defn crossing-count-involving-layer [g height order r]
-  (crossing-count-for-layers g order (range (max (dec height) (inc r)) (dec r) -1)))
+  (crossing-count-for-layers g order (range (min (dec height) (inc r)) (dec r) -1)))
+
 
 (defn crossing-count-for-ordering [g height order]
   (crossing-count-for-layers g order (range (dec height) 0 -1)))
@@ -317,56 +330,66 @@
       (reset! improved false)
       (doall (for [r (range 0 height)
              [v w] (partition 2 1 (get @order r))]
-         (do (println "layer" r "v w" [v w])
-             (when (> (crossing-count-involving-layer g height @order r)
-                      (crossing-count-involving-layer g height (update @order r (partial replace {v w, w v})) r))
-               (println "better after replacement: " (crossing-count-involving-layer g height (update @order r (partial replace {v w, w v})) r))
-               (reset! improved true)
-               (swap! order update r (partial replace {v w, w v})))))))
+               (when (> (crossing-count-involving-layer g height @order r)
+                        (crossing-count-involving-layer g height (update @order r (partial replace {v w, w v})) r))
+                 (println "better after replacement: "
+                          (crossing-count-involving-layer g height (update @order r (partial replace {v w, w v})) r)
+                          "r" r
+                          "[v w]" [v w])
+                 (reset! improved true)
+                 (swap! order update r (partial replace {v w, w v}))))))
     @order))
 
 (defn alternating-directions [dummy-graph height i]
   (if (even? i)
     ;; the dummy-graph only has short edges
     ;; thus all neighbours are in the next/previous layer
-    [(range (- height 2) -1 -1) inc (partial graph/predecessors dummy-graph)]
-    [(range 1 height) dec (partial graph/successors dummy-graph)]))
+    [(range (dec height) -1 -1) inc (partial graph/predecessors dummy-graph)]
+    [(range 0 height) dec (partial graph/successors dummy-graph)]))
 
 (def crossing-minimization-graph
-  {:initial-order
-   (fnk [dummy-graph all-node-to-layer height]
-     (let [top-level-nodes (keep (fn [[node layer]]
-                                   (when (= (dec height) layer)
-                                     node))
-                                 all-node-to-layer)]
-       (->> top-level-nodes
-            (reduce (fn [layer->nodes top-level-node]
-                      (let [bf-traversal (alg/bf-traverse dummy-graph top-level-node)]
-                        (reduce (fn [layer->nodes node]
-                                  (update layer->nodes (get all-node-to-layer node) (fnil conj []) node))
-                                layer->nodes
-                                bf-traversal)))
-                    {})
-            (map-vals (partial into [] (distinct))))))
+  {:root-nodes
+   (fnk [dummy-graph]
+     (set/difference (graph/nodes dummy-graph)
+                     (into #{} (map second) (graph/edges dummy-graph))))
+   :initial-order
+   (fnk [dummy-graph all-node-to-layer root-nodes]
+     (->> root-nodes
+          (reduce (fn [layer->nodes top-level-node]
+                    (let [bf-traversal (alg/bf-traverse dummy-graph top-level-node)]
+                      (reduce (fn [layer->nodes node]
+                                (update layer->nodes (get all-node-to-layer node) (fnil conj []) node))
+                              layer->nodes
+                              bf-traversal)))
+                  {})
+          (map-vals (partial into [] (distinct)))))
    :ordering
    (fnk [initial-order height dummy-graph]
+     (pprint/pprint {:initial-order initial-order})
+     (def ii initial-order)
      (loop [i 0
             best initial-order]
        (if (>= i 24)
-         best
+         (do (println "best crossingcount:" (crossing-count-for-ordering dummy-graph height best)
+                      "initial crossingcount:" (crossing-count-for-ordering dummy-graph height initial-order))
+             best)
          (let [[layer-indices next-layer-fn neighbours-fn]
                (alternating-directions dummy-graph height i)
                order (weighted-median-sorted best layer-indices next-layer-fn neighbours-fn)
-               transposed-order (transpose dummy-graph height order)]
-           (println "ordering orderingdingding")
-           (if (< (crossing-count-for-ordering dummy-graph height transposed-order)
+               _ (println "weighted order:" (crossing-count-for-ordering dummy-graph height order))
+               _ (prn "obobobob" order)
+               _ (def oo order)
+               transposed-order (transpose dummy-graph height order)
+               new-crossing-count (crossing-count-for-ordering dummy-graph height transposed-order)]
+           (println "new CC:" new-crossing-count)
+           (if (< new-crossing-count
                   (crossing-count-for-ordering dummy-graph height best))
              (recur (inc i) transposed-order)
              (recur (inc i) best))))))
    :layer-to-nodes
    (fnk [ordering initial-order]
-     initial-order
-     ;ordering
+     ;initial-order
+     ordering
      )})
 
 (def layout-graph
@@ -655,7 +678,6 @@
                                                      xy-coordinates-centered)
                                            xy-coordinates-centered))
    :edge->src->dest                    (fnk [dummy-graph]
-                                         (println "esd")
                                          (reduce (fn [acc [src dest]]
                                                    (assoc-in
                                                      acc
@@ -670,7 +692,6 @@
                                                  {}
                                                  (graph/edges dummy-graph)))
    :edge->node-coordinates             (fnk [id->size edge->src->dest xy-coordinates]
-                                         (println "enc")
                                          (into {}
                                                (map (fn [[[src dest :as edge] src->dest]]
                                                       (let [src-point
