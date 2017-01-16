@@ -15,11 +15,11 @@
                                       idx)))
        (first)))
 
-(def delta-local 10)
+(def delta-local 70)
 
 (def delta 100)
 
-#_(defn place-block [v->root v->align v->sink v->shift v->x v->inner-shift id->size predecessor-fn v]
+(defn place-block [v->root v->align v->sink v->shift v->x v->inner-shift id->size predecessor-fn v]
   (when-not (get @v->x v)
     (swap! v->x assoc v 0)
     (let [initial (atom true)]
@@ -53,7 +53,7 @@
             (recur w-next)))))))
 
 
-(defn place-block [v->root v->align v->sink v->shift v->x v->inner-shift id->size predecessor-fn v]
+#_(defn place-block [v->root v->align v->sink v->shift v->x v->inner-shift id->size predecessor-fn v]
   (when-not (get @v->x v)
     (swap! v->x assoc v 0)
     (let [initial (atom true)]
@@ -269,21 +269,17 @@
                  (conj result next-node)))))))
 
 (defn weighted-median-sorted [ordering layer-indices next-layer-fn neighbours-fn]
-  (let [v->median-neighbor-index
-        (into {} (for [r layer-indices :let [next-layer (get ordering (next-layer-fn r))]
-                       v (get ordering r)]
-                   (do (println "adja" (adjacent-indices next-layer (neighbours-fn v) v)
-                                "neighs" (neighbours-fn v)
-                                "v" v)
-                       [v (median-neighbor-index (adjacent-indices next-layer (neighbours-fn v) v))])))]
-    (println "medneiind" v->median-neighbor-index)
-    #_(println "x04" (get v->median-neighbor-index "x04")
-             "x05" (get v->median-neighbor-index "x05")
-             "<" (< (get v->median-neighbor-index "x04")
-                    (get v->median-neighbor-index "x05")))
-    (map-vals (fn [layer]
-                (sort-with-fixed-positions v->median-neighbor-index layer))
-              ordering)))
+  (loop [new-order {(first layer-indices) (get ordering (first layer-indices))}
+         [r & next-indices] (rest layer-indices)]
+    (if-not r
+      new-order
+      (let [next-layer (get new-order (next-layer-fn r))
+            layer (get ordering r)
+            v->median-neighbor-index
+            (into {} (for [v layer]
+                       [v (median-neighbor-index (adjacent-indices next-layer (neighbours-fn v) v))]))]
+        (recur (assoc new-order r (sort-with-fixed-positions v->median-neighbor-index layer))
+               next-indices)))))
 
 
 (defn crossing-count [g order layer-index]
@@ -347,6 +343,16 @@
     [(range (dec height) -1 -1) inc (partial graph/predecessors dummy-graph)]
     [(range 0 height) dec (partial graph/successors dummy-graph)]))
 
+(defn no-real-improvement? [crossing-counts]
+  (and (= 4 (count crossing-counts))
+       (let [last-cc (last crossing-counts)
+             improvements (map (fn [crossing-count]
+                                 (- last-cc crossing-count))
+                               (butlast crossing-counts))]
+         (< (/ (reduce + improvements)
+               last-cc)
+            0.02))))
+
 (def crossing-minimization-graph
   {:root-nodes
    (fnk [dummy-graph]
@@ -368,8 +374,10 @@
      (pprint/pprint {:initial-order initial-order})
      (def ii initial-order)
      (loop [i 0
-            best initial-order]
-       (if (>= i 24)
+            best initial-order
+            [best-crossing-count :as last-crossing-counts] (list (crossing-count-for-ordering dummy-graph height initial-order))]
+       (if (or (>= i 24)
+               (no-real-improvement? last-crossing-counts))
          (do (println "best crossingcount:" (crossing-count-for-ordering dummy-graph height best)
                       "initial crossingcount:" (crossing-count-for-ordering dummy-graph height initial-order))
              best)
@@ -377,15 +385,13 @@
                (alternating-directions dummy-graph height i)
                order (weighted-median-sorted best layer-indices next-layer-fn neighbours-fn)
                _ (println "weighted order:" (crossing-count-for-ordering dummy-graph height order))
-               _ (prn "obobobob" order)
-               _ (def oo order)
                transposed-order (transpose dummy-graph height order)
                new-crossing-count (crossing-count-for-ordering dummy-graph height transposed-order)]
            (println "new CC:" new-crossing-count)
            (if (< new-crossing-count
-                  (crossing-count-for-ordering dummy-graph height best))
-             (recur (inc i) transposed-order)
-             (recur (inc i) best))))))
+                  best-crossing-count)
+             (recur (inc i) transposed-order (take 4 (cons new-crossing-count last-crossing-counts)))
+             (recur (inc i) best (take 4 (cons best-crossing-count last-crossing-counts))))))))
    :layer-to-nodes
    (fnk [ordering initial-order]
      ;initial-order
