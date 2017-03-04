@@ -130,7 +130,7 @@
              (println "edge" edge)
              (let [node-coordinates (get (::all-edges state) edge)]
                (when (seq node-coordinates)
-                 [:polyline {:key        (str edge)
+                 #_[:polyline {:key        (str edge)
                              :id         (str edge)
                              :marker-end "url(#arrow)"
                              :fill       "none"
@@ -139,7 +139,7 @@
                                                             node-coordinates))
                              :style      {:stroke       "#000000"
                                           :stroke-width 1}}]
-                 #_(condp = (count node-coordinates)
+                 (condp = (count node-coordinates)
                    2 [:polyline {:key        (str edge)
                                  :id         (str edge)
                                  :marker-end "url(#arrow)"
@@ -478,7 +478,7 @@
    :domain-users-new                 (fnk [jira-users-new]
                                        )})
 
-#_(def example-graph
+(def example-graph
   ;; input:
   ;; dbval :- Datomic database value,
   ;; today :- Date of today with time 1 millisecond before tomorrow
@@ -603,7 +603,7 @@
                     ;:x23 (fnk [x03 x06 x21 x22])
                     })
 
-(def example-graph {:x03 (fnk [x01 x02])
+#_(def example-graph {:x03 (fnk [x01 x02])
                     :x04 (fnk [x01 x03])
                     :x05 (fnk [x03])
                     :x06 (fnk [x04])
