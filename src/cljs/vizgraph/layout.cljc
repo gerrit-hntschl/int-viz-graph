@@ -35,12 +35,12 @@
               (swap! v->sink assoc v (get @v->sink u)))
             (if (not= (get @v->sink v) (get @v->sink u))
               (let [sc (- (+ (get @v->x v) (get v->inner-shift w))
-                          (get @v->x u) (get v->inner-shift w-pred) (get-in id->size [w-pred :width]) delta-local)]
+                          (get @v->x u) (get v->inner-shift w-pred) (get-in id->size [w-pred :width] 50) delta-local)]
                 (swap! v->shift assoc (get @v->sink u) (min (get @v->shift (get @v->sink u))
                                                             sc))
                 (println "new shift, sink v" v " != sink u " (get @v->sink u) " -> " (min (get @v->shift (get @v->sink u))
                                                                                           sc)))
-              (let [sb (- (+ (get @v->x u) (get v->inner-shift w-pred) (get-in id->size [w-pred :width])
+              (let [sb (- (+ (get @v->x u) (get v->inner-shift w-pred) (get-in id->size [w-pred :width] 50)
                              delta-local)
                           (get v->inner-shift w))]
                 (if @initial
@@ -172,25 +172,26 @@
                     vs)]
       (println "root-node" v)
       (place-block v->root v->align v->sink v->shift v->x v->inner-shift id->size predecessor-fn v))
-    (println "- absolute coords -")
-    (doseq [v vs]
-      (println "coord" v ", root[v]" (get v->root v) "new x[v] = x[root[v]]" (get @v->x (get v->root v)))
-      (swap! v->x assoc v (get @v->x (get v->root v)))
-      (let [shift-sink-root-v (get @v->shift (get @v->sink (get v->root v)))]
-        (println "shift-sink-root-v" shift-sink-root-v "root-sink" (get @v->sink (get v->root v)))
-        (when (< shift-sink-root-v MAX_NUMBER_VAL)
-          (println "shift v '" v "' by" shift-sink-root-v " -> " (+ (get @v->x v)
-                                                                    shift-sink-root-v))
-          (swap! v->x assoc v (+ (get @v->x v)
-                                 shift-sink-root-v)))))
-    @v->x))
+    (println "------- absolute coords -------")
+    (let [v->abs-x (atom {})]
+      (doseq [v vs]
+        (println "coord" v ", root[v]" (get v->root v) "new x[v] = x[root[v]]" (get @v->x (get v->root v)))
+        (swap! v->abs-x assoc v (get @v->x (get v->root v)))
+        (let [shift-sink-root-v (get @v->shift (get @v->sink (get v->root v)))]
+          (println "shift-sink-root-v" shift-sink-root-v "root-sink" (get @v->sink (get v->root v)))
+          (when (< shift-sink-root-v MAX_NUMBER_VAL)
+            (println "shift v '" v "' by" shift-sink-root-v " -> " (+ (get @v->abs-x v)
+                                                                      shift-sink-root-v))
+            (swap! v->abs-x assoc v (+ (get @v->abs-x v)
+                                   shift-sink-root-v)))))
+      @v->abs-x)))
 
 (defn inner-shift [dummy-graph id->size vertical-alignment]
   (let [vs (graph/nodes dummy-graph)
         v->inner-shift (atom (zipmap vs (repeat 0)))
         v->root (:root vertical-alignment)
         v->align (:align vertical-alignment)
-        v->xp (fn [v] (/ (get-in id->size [v :width]) 2))
+        v->xp (fn [v] (/ (get-in id->size [v :width] 10) 2))
         root->block-size (atom {})]
     (doseq [b-root (into []
                          (filter (fn [v] (= v (get v->root v))))
@@ -202,7 +203,7 @@
                 s (- (+ (get @v->inner-shift vp) (v->xp vp)) (v->xp vq))]
             (swap! v->inner-shift assoc vq s)
             (swap! left min s)
-            (swap! right max (+ s (get-in id->size [vq :width])))
+            (swap! right max (+ s (get-in id->size [vq :width] 10)))
             (when-not (= vq b-root)
               (recur vq))))
         (loop [vp b-root]
@@ -393,8 +394,7 @@
              (recur (inc i) transposed-order (take 4 (cons new-crossing-count last-crossing-counts)))
              (recur (inc i) best (take 4 (cons best-crossing-count last-crossing-counts))))))))
    :layer-to-nodes
-   (fnk [ordering initial-order]
-     ;initial-order
+   (fnk [ordering]
      ordering
      )})
 
@@ -496,7 +496,7 @@
                                                    max-index-Li+1 (dec cardinality-Li+1)]
                                                (doseq [l1 (range 0 cardinality-Li+1)]
                                                  (let [vl1Li+1 (get Li+1 l1)]
-                                                   (println "vl1Li+1" vl1Li+1)
+                                                   (println "vl1Li+1" vl1Li+1 "k0" @k0)
                                                    (if (or (= l1 max-index-Li+1)
                                                            (contains? vertices-incident-to-inner-segment
                                                                       vl1Li+1))
@@ -518,11 +518,13 @@
                                                                                      upper-neighbor-vki)]
                                                                (println "k" k)
                                                                (when (or (< k @k0) (> k k1))
-                                                                 (println "marked: (< k @k0)" (< k @k0) "(> k k1)" (> k k1))
+                                                                 (println "marked: (< k @k0)" (< k @k0) "(> k k1)" (> k k1) "edge" #{upper-neighbor-vki vli+1})
                                                                  (swap! marked conj #{upper-neighbor-vki vli+1}))))))
                                                        (reset! k0 k1)
                                                        (println "k0" @k0)))))))
-                                           @marked))
+                                           (prn "conflifli" @marked)
+                                           ;@marked
+                                           #{}))
    :vertical-alignment-up-left         (fnk [dummy-graph height layer-to-nodes type-1-conflicts]
                                          (println "up left align")
                                          (align-vertically dummy-graph
@@ -563,6 +565,7 @@
                                                                 id->size
                                                                 inner-shift-up-right))
    :vertical-alignment-down-left       (fnk [dummy-graph height layer-to-nodes type-1-conflicts]
+                                         (println "\n -------------- vertical alignment DLDL ------------")
                                          (align-vertically dummy-graph
                                                            height
                                                            layer-to-nodes
@@ -572,9 +575,11 @@
                                                            graph/successors
                                                            dec))
    :inner-shift-down-left              (fnk [dummy-graph id->size vertical-alignment-down-left]
+                                         (prn {:vadl vertical-alignment-down-left})
                                          (inner-shift dummy-graph id->size vertical-alignment-down-left))
    :horizontal-compaction-down-left    (fnk [vertical-alignment-down-left dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-down-left]
-                                         (println "\n -------------- compaction ------------")
+                                         (println "\n -------------- compaction ------------ down left")
+                                         (println "\n \n layer-to-nodes" (get layer-to-nodes 8))
                                          (horizontal-compaction vertical-alignment-down-left dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-down-left))
    :vertical-alignment-down-right      (fnk [dummy-graph height layer-to-nodes type-1-conflicts]
                                          (align-vertically dummy-graph
@@ -625,6 +630,7 @@
                                          (map-vals (fn [x] (+ x up-left-shift))
                                                    horizontal-compaction-up-left))
    :down-left-aligned                  (fnk [horizontal-compaction-down-left down-left-shift]
+                                         (println "down-left-shift" down-left-shift)
                                          (map-vals (fn [x] (+ x down-left-shift))
                                                    horizontal-compaction-down-left))
    :up-right-aligned                   (fnk [horizontal-compaction-up-right up-right-shift]
@@ -655,30 +661,52 @@
                                              down-left-aligned
                                              up-right-aligned
                                              down-right-aligned
-                                             y-coordinates]
+                                             y-coordinates
+                                             layer-to-nodes
+                                             horizontal-compaction-down-left]
+                                         (prn {:layer-to-nodes layer-to-nodes})
+                                         (println "layer14" (get layer-to-nodes 14))
+                                         (println "hzdl dbusernamesall" (get horizontal-compaction-down-left "db-usernames-all"))
+                                         (println "hzdl ticketids" (get horizontal-compaction-down-left "db-ticket-ids-all"))
+                                         (println "ticketidsall poses" (zipmap [:up-left :down-left :up-right :down-right]
+                                                                               (map #(get % "db-ticket-ids-all")
+                                                                                    [up-left-aligned
+                                                                                     down-left-aligned
+                                                                                     up-right-aligned
+                                                                                     down-right-aligned])))
+                                         (println "db-usernames-all poses" (zipmap [:up-left :down-left :up-right :down-right]
+                                                                                   (map #(get % "db-usernames-all")
+                                                                                        [up-left-aligned
+                                                                                         down-left-aligned
+                                                                                         up-right-aligned
+                                                                                         down-right-aligned])))
+                                         (println "down-left-aligned" down-left-aligned)
                                          #_(into {}
-                                                 (map (fn [[n x]]
-
-                                                        [n {:x x
-                                                            :y (get y-coordinates n)}])
-                                                      up-right-aligned))
-                                         (into {}
                                                (map (fn [[n x]]
-                                                      (let [[_ x1 x2 _] (sort (cons x
-                                                                                    (map (fn [alignment]
-                                                                                           (get alignment n))
-                                                                                         [down-left-aligned
-                                                                                          up-right-aligned
-                                                                                          down-right-aligned])))]
-                                                        [n {:x (/ (+ x1 x2) 2)
-                                                            :y (get y-coordinates n)}]))
-                                                    up-left-aligned)))
+
+                                                      [n {:x x
+                                                          :y (get y-coordinates n)}])
+                                                    down-left-aligned))
+
+                                         (into {}
+                                                 (map (fn [[n x]]
+                                                        (let [[_ x1 x2 _] (sort (cons x
+                                                                                      (map (fn [alignment]
+                                                                                             (get alignment n))
+                                                                                           [down-left-aligned
+                                                                                            up-right-aligned
+                                                                                            down-right-aligned])))]
+                                                          (println "x centered" n "[x1 x2]" [x1 x2])
+                                                          [n {:x (/ (+ x1 x2) 2)
+                                                              :y (get y-coordinates n)}]))
+                                                      up-left-aligned)))
    :min-x-coordinate                   (fnk [xy-coordinates-centered]
                                          (->> xy-coordinates-centered
                                               (vals)
                                               (map :x)
                                               (apply min)))
    :xy-coordinates                     (fnk [xy-coordinates-centered min-x-coordinate]
+                                         (println "min-x" min-x-coordinate)
                                          (if (< min-x-coordinate 0)
                                            (map-vals (fn [xy] (update xy :x - min-x-coordinate))
                                                      xy-coordinates-centered)
@@ -765,6 +793,7 @@
 (def lay (compile-cancelling layout-graph))
 
 (defn hierarchical [id->size edges]
+  (prn "id->size" id->size)
   (let [lg (lay {:g (apply graph/digraph edges)
                  :id->size id->size})]
     (select-keys lg [:size :xy-coordinates :edge->node-coordinates])))
