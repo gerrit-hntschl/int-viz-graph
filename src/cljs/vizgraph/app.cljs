@@ -1,4 +1,5 @@
 (ns vizgraph.app
+  (:import [goog.dom query])
   (:require [rum.core :as rum]
             [cljs.pprint :as pprint]
             [clojure.string :as str]
@@ -8,13 +9,22 @@
             [vizgraph.layout :as layout]
             [plumbing.core :refer [map-vals]]
             [plumbing.fnk.pfnk :as pfnk]
-            [clojure.set :as set])
+            [clojure.set :as set]
+
+            [goog.events :as gevents]
+            )
   (:require-macros [vizgraph.core :refer [fnk]]))
+
+(extend-type js/NodeList
+  ISeqable
+  (-seq [array] (array-seq array 0)))
+
 
 (enable-console-print!)
 
+(def layout-result (atom nil))
+
 (def sized {:did-mount (fn [state]
-                         (println "sized did-mount")
                          (let [component (:rum/react-component state)
                                dom-node (rum/dom-node state)
                                [size-atom comp-name] (:rum/args state)
@@ -101,20 +111,58 @@
     node-name]])
 
 
-(rum/defcs layout <
-  {:did-mount (fn [state]
-                (println "layout did-mount")
-                (let [[size-atom nodes edges] (:rum/args state)
-                      {:keys [xy-coordinates edge->node-coordinates size]} (layout/hierarchical @size-atom edges)]
-                  (rum/request-render (:rum/react-component state))
-                  (assoc state ::id->coordinates xy-coordinates
-                               ::all-edges edge->node-coordinates
-                               ::graph-size size)))}
+(rum/defc positioned-node < rum/reactive
+  [id view node-coords-overrides child-coordinates result]
+  (println "id" id "raw x" (get-in child-coordinates [id :x]))
+  (let [overriden-coords (some-> (get node-coords-overrides id) (rum/react))]
+    [:div {:style   {:top      (or
+                                 (:y overriden-coords)
+                                 (get-in child-coordinates [id :y]))
+                     :position "absolute"
+                     :left     (or
+
+                                 (:x overriden-coords)
+                                 (get-in child-coordinates [id :x]))
+                     :transition "transform 1s"}
+           :class   "graph-node"
+           :onClick (fn [e]
+                      (println "clicked:" id)
+                      (.preventDefault e)
+                      (.stopPropagation e)
+                      (let [{:keys [dummy-graph xy-coordinates node-to-layer]} result
+                            selected-layer (get node-to-layer id)
+                            succs-selected (graph/successors dummy-graph id)]
+                        (doseq [succ succs-selected]
+                          (when (:layer succ)
+                            (let [dest (:dest succ)
+                                  coords (get xy-coordinates succ)]
+                              (reset! (get node-coords-overrides dest) coords))))))}
+
+     view]))
+
+(rum/defcs layout < rum/reactive
+                    {:did-mount (fn [state]
+                                  (println "layout did-mount")
+                                  (let [[size-atom nodes edges] (:rum/args state)
+                                        {:keys [xy-coordinates edge->node-coordinates size dummy-graph] :as result} (layout/hierarchical @size-atom edges)]
+                                    (reset! layout-result result)
+                                    ;(rum/request-render (:rum/react-component state))
+                                    (assoc state ::node-coords-overrides (into {}
+                                                                               (map (fn [node]
+                                                                                      [node (atom nil)]))
+                                                                               (graph/nodes dummy-graph)))
+                                    #_(assoc state ::id->coordinates xy-coordinates
+                                                   ::all-edges edge->node-coordinates
+                                                   ::graph-size size
+                                                   ::layout-result result)))}
   [state size-atom nodes edges]
-  (let [child-coordinates (or (::id->coordinates state)
-                              (map #(update % 0 str) (iterate #(update % 0 inc) [0 0])))]
+  (println "in layout")
+  (let [result (rum/react layout-result)
+        child-coordinates (or (:xy-coordinates result)
+                              (map #(update % 0 str) (iterate #(update % 0 inc) [0 0])))
+        node-coords-overrides (::node-coords-overrides state)]
     [:div {:style {:position "relative"}}
-     [:svg (or (map-vals (partial + 150) (::graph-size state)) {})
+     [:svg (or (map-vals (partial + 150) (:size result)) {})
       [:defs
        [:marker {:id "arrow"
                  :markerWidth "14"
@@ -128,7 +176,7 @@
         [:polyline {:points "0,0 10,5 0,10 1,5"}]]]
       (map (fn [edge]
              (println "edge" edge)
-             (let [node-coordinates (get (::all-edges state) edge)]
+             (let [node-coordinates (get (:edge->node-coordinates result) edge)]
                (when (seq node-coordinates)
                  #_[:polyline {:key        (str edge)
                              :id         (str edge)
@@ -170,12 +218,7 @@
            edges)]
      [:div
       (map (fn [{:node/keys [view id]}]
-             (println "id" id "raw x" (get-in child-coordinates [id :x]))
-             [:div {:style {:top      (get-in child-coordinates [id :y])
-                            :position "absolute"
-                            :left     (get-in child-coordinates [id :x])}
-                    :key   id}
-              view])
+             (rum/with-key (positioned-node id view node-coords-overrides child-coordinates result) id))
            nodes)]]))
 
 #_(def example-graph {:topology-sorted                    (fnk [g]
@@ -478,7 +521,7 @@
    :domain-users-new                 (fnk [jira-users-new]
                                        )})
 
-(def example-graph
+#_(def example-graph
   ;; input:
   ;; dbval :- Datomic database value,
   ;; today :- Date of today with time 1 millisecond before tomorrow
@@ -626,6 +669,16 @@
                     :x23 (fnk [x03 x06 x21 x22])
                     })
 
+(def example-graph {:B (fnk [A])
+                    :C (fnk [B])
+                    :D (fnk [A B Y])
+                    :E (fnk [A C])
+                    :F (fnk [B Z])
+                    :G (fnk [E F])
+                    :H (fnk [E])
+                    :Y (fnk [X])
+                    :Z (fnk [Y])})
+
 
 (defn get-graph-nodes [g]
   (into #{} (concat (mapcat pfnk/input-schema-keys (vals g)) (keys g))))
@@ -640,8 +693,54 @@
                         [(name src) (name dest)])
                       srcs)))))
 
+(def selected-node-id (atom nil))
+
+
+#_(add-watch selected-node-id :selected-node-focus
+           (fn [_ _ prev-selected new-selected-id]
+             (let [{:keys [dummy-graph xy-coordinates node-to-layer]} @layout-result
+                   selected-layer (get node-to-layer new-selected-id)
+                   succs-selected (graph/successors dummy-graph new-selected-id)]
+               (doseq [succ succs-selected]
+                 (when (not= (dec selected-layer) (get node-to-layer succ))
+                   (let [dummy-node {:src new-selected-id :dest succ :layer (dec selected-layer)}
+                         coords (get xy-coordinates dummy-node)]
+                     (println "new-coords" coords)
+                     ))))
+             (println "prev" prev-selected "new" new-selected-id)
+             #_(let [graph-desc-state @graph-desc-atom
+                   nodes-description (get graph-desc-state "nodes")
+                   sizes (get graph-desc-state "sizes")]
+               (remove-highlight-arrows)
+               (when prev-selected
+                 (revert-to-default-positions nodes-description prev-selected))
+               (if new-selected-id
+                 (highlight-selection nodes-description sizes new-selected-id)
+                 (revert-to-normal-display)))))
+
+(defn add-click-listener [ele callback]
+  (gevents/listen
+    ele
+    goog.events.EventType.CLICK
+    callback))
+
+(defn start []
+  #_(add-click-listener
+    (.-body js/document)
+    (fn [_]
+      (reset! selected-node-id nil)))
+  #_(doseq [node-ele (seq (query ".graph-node"))]
+    (add-click-listener node-ele
+                        (fn [evt]
+                          (reset! selected-node-id (.-id node-ele))
+                          (.preventDefault evt)
+                          (.stopPropagation evt)))))
+
+
+
 (defn init []
-  (let [size-atom (atom {})]
+  (let [size-atom (atom {})
+        edges (get-graph-edges example-graph (get-graph-nodes example-graph))]
     (rum/mount (layout size-atom
                        (concat
                          (map (fn [[node-name keywordfn]]
@@ -657,5 +756,6 @@
                                                     (vals example-graph))
                                               (into #{}
                                                     (keys example-graph)))))
-                       (get-graph-edges example-graph (get-graph-nodes example-graph)))
-               (. js/document (getElementById "container")))))
+                       edges)
+               (. js/document (getElementById "container")))
+    (start)))

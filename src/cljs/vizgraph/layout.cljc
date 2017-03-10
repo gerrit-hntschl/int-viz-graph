@@ -52,45 +52,6 @@
           (when (not= w-next v)
             (recur w-next)))))))
 
-
-#_(defn place-block [v->root v->align v->sink v->shift v->x v->inner-shift id->size predecessor-fn v]
-  (when-not (get @v->x v)
-    (swap! v->x assoc v 0)
-    (let [initial (atom true)]
-      (println "place" v "0")
-      (loop [w v]
-        (when-let [w-pred (predecessor-fn w)]
-          (let [u (get v->root w-pred)]
-            (println "pred-root u" u)
-            (place-block v->root v->align v->sink v->shift v->x v->inner-shift id->size predecessor-fn u)
-            (println "back to v" v ", u" u)
-            (when (= (get @v->sink v) v)
-              (println "new sink for " v " -> " u)
-              (swap! v->sink assoc v (get @v->sink u)))
-            (if (not= (get @v->sink v) (get @v->sink u))
-              (let [sc (- (+ (get @v->x v) (get v->inner-shift w))
-                          (get @v->x u) (get v->inner-shift w-pred) (get-in id->size [w-pred :width]) delta-local)
-                    sc (- (get @v->x v)
-                             (get @v->x u)
-                             delta)]
-                (swap! v->shift assoc (get @v->sink u) (min (get @v->shift (get @v->sink u))
-                                                            sc))
-                (println "new shift, sink v" v " != sink u " (get @v->sink u) " -> " (min (get @v->shift (get @v->sink u))
-                                                                                          sc)))
-              (let [sb (- (+ (get @v->x u) (get v->inner-shift w-pred) (get-in id->size [w-pred :width])
-                             delta-local)
-                          (get v->inner-shift w))
-                    sb (+ (get @v->x u) delta)]
-                (swap! v->x assoc v (max (get @v->x v) sb))
-                #_(if @initial
-                  (swap! v->x assoc v sb)
-                  (swap! v->x assoc v (max (get @v->x v) sb)))
-                (reset! initial false)
-                (println "new x for" v " -> " (max (get @v->x v) (+ (get @v->x u) delta-local)))))))
-        (let [w-next (get v->align w)]
-          (when (not= w-next v)
-            (recur w-next)))))))
-
 (def MAX_NUMBER_VAL #?(:clj Integer/MAX_VALUE
                        :cljs js/Infinity))
 
@@ -438,10 +399,10 @@
                                          (->> long-edges
                                               (map (fn [[src dest :as long-edge]]
                                                      (let [dummy-nodes (map (fn [dummy-index]
-                                                                              {:src         src
-                                                                               :dest        dest
-                                                                               :dummy-index dummy-index
-                                                                               :layer       (- (get node-to-layer src) dummy-index)})
+                                                                              {:src   src
+                                                                               :dest  dest
+                                                                               ;:dummy-index dummy-index
+                                                                               :layer (- (get node-to-layer src) dummy-index)})
                                                                             (range 1 (get edge->length long-edge)))
                                                            dummy-edges (->> (concat [src] dummy-nodes [dest])
                                                                             (partition 2 1)
@@ -481,7 +442,9 @@
                                          ; an inner segment between L_i and L_i+1
                                          (into #{}
                                                (filter (fn [dummy-vertex]
-                                                         (some :dummy-index (graph/predecessors dummy-graph dummy-vertex))))
+                                                         (some ;:dummy-index
+                                                           :layer
+                                                           (graph/predecessors dummy-graph dummy-vertex))))
                                                (:dummy-nodes dummies)))
    :type-1-conflicts                   (fnk [height vertices-incident-to-inner-segment layer-to-nodes dummy-graph]
                                          (let [marked (atom #{})]
@@ -768,6 +731,7 @@
 
 (defn hierarchical [id->size edges]
   (prn "id->size" id->size)
-  (let [lg (lay {:g (apply graph/digraph edges)
+  (let [lg (lay {:g        (apply graph/digraph edges)
                  :id->size id->size})]
-    (select-keys lg [:size :xy-coordinates :edge->node-coordinates])))
+    ;(select-keys lg [:size :xy-coordinates :edge->node-coordinates])
+    lg))
