@@ -24,6 +24,8 @@
 
 (def layout-result (atom nil))
 
+(def selection-layout (atom nil))
+
 (def sized {:did-mount (fn [state]
                          (let [component (:rum/react-component state)
                                dom-node (rum/dom-node state)
@@ -55,17 +57,19 @@
                           (map (fn [input-key]
                                  (-> input-key name (.replace \- \u2011))))
                           input-keys)
-        formatted-code (-> (reader/read-string source)
-                           (pprint/write
-                             :dispatch pprint/code-dispatch)
-                           (with-out-str)
-                           (.replace \- \u2011))
-        code-with-marked-input (reduce (fn [code input-name]
-                                         (-> code
-                                             (str/replace input-name (str "@@@" input-name "@@@"))))
-                                       formatted-code
-                                       input-names)
-        code-markup (-> code-with-marked-input
+        formatted-code (when (string? source)
+                         (-> (reader/read-string source)
+                            (pprint/write
+                              :dispatch pprint/code-dispatch)
+                            (with-out-str)
+                            (.replace \- \u2011)))
+        code-with-marked-input (when formatted-code
+                                 (reduce (fn [code input-name]
+                                          (-> code
+                                              (str/replace input-name (str "@@@" input-name "@@@"))))
+                                        formatted-code
+                                        input-names))
+        code-markup (some-> code-with-marked-input
                         (str/split #"@@@")
                         (->> (map (fn [s]
                                     (if (contains? input-names s)
@@ -113,30 +117,27 @@
 
 (rum/defc positioned-node < rum/reactive
   [id view node-coords-overrides child-coordinates result]
-  (println "id" id "raw x" (get-in child-coordinates [id :x]))
   (let [overriden-coords (some-> (get node-coords-overrides id) (rum/react))]
-    [:div {:style   {:top      (or
-                                 (:y overriden-coords)
-                                 (get-in child-coordinates [id :y]))
-                     :position "absolute"
-                     :left     (or
+    [:div {:style   {:top        (or
+                                   (:y overriden-coords)
+                                   (get-in child-coordinates [id :y]))
+                     :position   "absolute"
+                     :left       (or
 
-                                 (:x overriden-coords)
-                                 (get-in child-coordinates [id :x]))
-                     :transition "transform 1s"}
+                                   (:x overriden-coords)
+                                   (get-in child-coordinates [id :x]))
+                     :transition "top 700ms, left 700ms"}
            :class   "graph-node"
            :onClick (fn [e]
-                      (println "clicked:" id)
+                      (println "clicked:" id "- result:" result)
                       (.preventDefault e)
                       (.stopPropagation e)
-                      (let [{:keys [dummy-graph xy-coordinates node-to-layer]} result
-                            selected-layer (get node-to-layer id)
-                            succs-selected (graph/successors dummy-graph id)]
-                        (doseq [succ succs-selected]
-                          (when (:layer succ)
-                            (let [dest (:dest succ)
-                                  coords (get xy-coordinates succ)]
-                              (reset! (get node-coords-overrides dest) coords))))))}
+                      (reset! selection-layout (layout/selection-dependent-coords result id)
+                              #_(doseq [succ succs-selected]
+                                  (when (:layer succ)
+                                    (let [dest (:dest succ)
+                                          coords (get xy-coordinates succ)]
+                                      (reset! (get node-coords-overrides dest) coords))))))}
 
      view]))
 
@@ -157,11 +158,18 @@
                                                    ::layout-result result)))}
   [state size-atom nodes edges]
   (println "in layout")
-  (let [result (rum/react layout-result)
+  (let [original-layout (rum/react layout-result)
+        result (or (rum/react selection-layout)
+                   original-layout)
         child-coordinates (or (:xy-coordinates result)
                               (map #(update % 0 str) (iterate #(update % 0 inc) [0 0])))
         node-coords-overrides (::node-coords-overrides state)]
-    [:div {:style {:position "relative"}}
+    [:div {:style {:position "relative"}
+           :onClick (fn [e]
+                      (println "resetting layout")
+                      (.preventDefault e)
+                      (.stopPropagation e)
+                      (reset! selection-layout nil))}
      [:svg (or (map-vals (partial + 150) (:size result)) {})
       [:defs
        [:marker {:id "arrow"
@@ -187,38 +195,22 @@
                                                             node-coordinates))
                              :style      {:stroke       "#000000"
                                           :stroke-width 1}}]
-                 (condp = (count node-coordinates)
-                   2 [:polyline {:key        (str edge)
-                                 :id         (str edge)
-                                 :marker-end "url(#arrow)"
-                                 :fill       "none"
-                                 :stroke     "black"
-                                 :points     (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
-                                                                node-coordinates))
-                                 :style      {:stroke       "#000000"
-                                              :stroke-width 1}}]
-                   3 [:path {:d          (str "M" (str/join "," ((juxt :x :y) (first node-coordinates)))
-                                              " Q" (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
-                                                                      (rest node-coordinates))))
-                             :fill       "transparent"
-                             :stroke     "black"
-                             :marker-end "url(#arrow)"
-                             :key        (str edge)
-                             :id         (str edge)}]
-                   [:path {:d          (str "M" (str/join "," ((juxt :x :y) (first node-coordinates)))
-                                            " C" (str/join ", " ((juxt :x :y) (second node-coordinates)))
-                                            " " (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
-                                                                   (take-last 2 node-coordinates))))
-                           :fill       "transparent"
-                           :stroke     "black"
-                           :marker-end "url(#arrow)"
-                           :key        (str edge)
-                           :id         (str edge)}]
-                   ))))
+                 [:path {:d          (str "M" (str/join "," ((juxt :x :y) (first node-coordinates)))
+                                          " C" (str/join ", " ((juxt :x :y) ((if (< (count node-coordinates) 4)
+                                                                               first
+                                                                               second)
+                                                                              node-coordinates)))
+                                          " " (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
+                                                                 (take-last 2 node-coordinates))))
+                         :fill       "transparent"
+                         :stroke     "black"
+                         :marker-end "url(#arrow)"
+                         :key        (str edge)
+                         :id         (str edge)}])))
            edges)]
      [:div
       (map (fn [{:node/keys [view id]}]
-             (rum/with-key (positioned-node id view node-coords-overrides child-coordinates result) id))
+             (rum/with-key (positioned-node id view node-coords-overrides child-coordinates original-layout) id))
            nodes)]]))
 
 #_(def example-graph {:topology-sorted                    (fnk [g]
@@ -521,7 +513,7 @@
    :domain-users-new                 (fnk [jira-users-new]
                                        )})
 
-#_(def example-graph
+(def example-graph
   ;; input:
   ;; dbval :- Datomic database value,
   ;; today :- Date of today with time 1 millisecond before tomorrow
@@ -669,7 +661,8 @@
                     :x23 (fnk [x03 x06 x21 x22])
                     })
 
-(def example-graph {:B (fnk [A])
+
+#_(def example-graph {:B (fnk [A])
                     :C (fnk [B])
                     :D (fnk [A B Y])
                     :E (fnk [A C])
@@ -678,6 +671,8 @@
                     :H (fnk [E])
                     :Y (fnk [X])
                     :Z (fnk [Y])})
+
+#_(def example-graph layout/layout-graph)
 
 
 (defn get-graph-nodes [g]

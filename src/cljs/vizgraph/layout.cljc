@@ -5,7 +5,9 @@
             [clojure.pprint :as pprint]
             [plumbing.fnk.pfnk :as pfnk]
             [plumbing.core
-             :refer [fnk map-vals]
+             :refer [map-vals safe-get]]
+            [vizgraph.core
+             :refer [fnk]
              :refer-macros [fnk]]
             [clojure.set :as set]))
 
@@ -14,6 +16,9 @@
        (keep-indexed (fn [idx node] (when (= node neighbor)
                                       idx)))
        (first)))
+
+(defn dummy? [node]
+  (map? node))
 
 (def delta-local 70)
 
@@ -60,6 +65,9 @@
 
 (def ceil #?(:clj (fn [x] (Math/ceil x))
               :cljs (fn [x] (js/Math.ceil x))))
+
+(def abs #?(:clj (fn [x] (Math/abs x))
+            :cljs (fn [x] (js/Math.abs x))))
 
 (defn align-vertically [dummy-graph
                         height
@@ -230,7 +238,7 @@
                  remaining-sorted
                  (conj result next-node)))))))
 
-(defn weighted-median-sorted [ordering layer-indices next-layer-fn neighbours-fn]
+(defn weighted-median-sorted [ordering layer-indices next-layer-fn neighbours-fn fixed-position-nodes]
   (loop [new-order {(first layer-indices) (get ordering (first layer-indices))}
          [r & next-indices] (rest layer-indices)]
     (if-not r
@@ -239,7 +247,9 @@
             layer (get ordering r)
             v->median-neighbor-index
             (into {} (for [v layer]
-                       [v (median-neighbor-index (adjacent-indices next-layer (neighbours-fn v) v))]))]
+                       [v (if (contains? fixed-position-nodes v)
+                            -1
+                            (median-neighbor-index (adjacent-indices next-layer (neighbours-fn v) v)))]))]
         (recur (assoc new-order r (sort-with-fixed-positions v->median-neighbor-index layer))
                next-indices)))))
 
@@ -316,7 +326,11 @@
             0.02))))
 
 (def crossing-minimization-graph
-  {:root-nodes
+  {;; overridable hook for preventing nodes from being re-ordered
+   :fixed-position-nodes
+   (fnk []
+     #{})
+   :root-nodes
    (fnk [dummy-graph]
      (set/difference (graph/nodes dummy-graph)
                      (into #{} (map second) (graph/edges dummy-graph))))
@@ -332,7 +346,7 @@
                   {})
           (map-vals (partial into [] (distinct)))))
    :ordering
-   (fnk [initial-order height dummy-graph]
+   (fnk [initial-order height dummy-graph fixed-position-nodes]
      (pprint/pprint {:initial-order initial-order})
      (def ii initial-order)
      (loop [i 0
@@ -345,7 +359,7 @@
              best)
          (let [[layer-indices next-layer-fn neighbours-fn]
                (alternating-directions dummy-graph height i)
-               order (weighted-median-sorted best layer-indices next-layer-fn neighbours-fn)
+               order (weighted-median-sorted best layer-indices next-layer-fn neighbours-fn fixed-position-nodes)
                _ (println "weighted order:" (crossing-count-for-ordering dummy-graph height order))
                transposed-order (transpose dummy-graph height order)
                new-crossing-count (crossing-count-for-ordering dummy-graph height transposed-order)]
@@ -385,8 +399,9 @@
    :edge->length                       (fnk [g node-to-layer]
                                          (into {}
                                                (map (juxt identity (fn [[src dest]]
-                                                                     (- (get node-to-layer src)
-                                                                        (get node-to-layer dest)))))
+                                                                     ; needs to be absolute for dynamic re-layering
+                                                                     (abs (- (get node-to-layer src)
+                                                                             (get node-to-layer dest))))))
                                                (graph/edges g)))
    :long-edges                         (fnk [edge->length]
                                          (into #{}
@@ -398,18 +413,20 @@
    :dummies                            (fnk [long-edges node-to-layer edge->length]
                                          (->> long-edges
                                               (map (fn [[src dest :as long-edge]]
-                                                     (let [dummy-nodes (map (fn [dummy-index]
+                                                     (let [layer-op (if (> (get node-to-layer src)
+                                                                           (get node-to-layer dest))
+                                                                      -
+                                                                      +)
+                                                           dummy-nodes (map (fn [dummy-index]
                                                                               {:src   src
                                                                                :dest  dest
-                                                                               ;:dummy-index dummy-index
-                                                                               :layer (- (get node-to-layer src) dummy-index)})
+                                                                               :layer (layer-op (get node-to-layer src) dummy-index)})
                                                                             (range 1 (get edge->length long-edge)))
                                                            dummy-edges (->> (concat [src] dummy-nodes [dest])
                                                                             (partition 2 1)
                                                                             (map vec))]
                                                        {:dummy-nodes dummy-nodes
-                                                        :dummy-edges dummy-edges}))
-                                                   )
+                                                        :dummy-edges dummy-edges})))
                                               (apply merge-with concat)))
    :dummy-graph                        (fnk [g dummies long-edges]
                                          (-> g
@@ -643,26 +660,29 @@
                                               (map :x)
                                               (apply min)))
    :xy-coordinates                     (fnk [xy-coordinates-centered min-x-coordinate]
-                                         (println "min-x" min-x-coordinate)
                                          (if (< min-x-coordinate 0)
                                            (map-vals (fn [xy] (update xy :x - min-x-coordinate))
                                                      xy-coordinates-centered)
                                            xy-coordinates-centered))
    :edge->src->dest                    (fnk [dummy-graph]
+                                         (prn "edgies" (graph/edges dummy-graph))
                                          (reduce (fn [acc [src dest]]
                                                    (assoc-in
                                                      acc
-                                                     [[(if (map? src)
+                                                     [[(if (dummy? src)
                                                          (:src src)
                                                          src)
-                                                       (if (map? dest)
+                                                       (if (dummy? dest)
                                                          (:dest dest)
                                                          dest)]
                                                       src]
                                                      dest))
                                                  {}
                                                  (graph/edges dummy-graph)))
+
    :edge->node-coordinates             (fnk [id->size edge->src->dest xy-coordinates]
+                                         (prn edge->src->dest)
+
                                          (into {}
                                                (map (fn [[[src dest :as edge] src->dest]]
                                                       (let [src-point
@@ -670,17 +690,26 @@
                                                                    (/ (get-in id->size [src :width]) 2))
                                                              :y (+ (get-in xy-coordinates [src :y])
                                                                    (get-in id->size [src :height]))}]
-                                                        [edge (loop [node (get src->dest src)
-                                                                     points [src-point]]
-                                                                (if (= node dest)
-                                                                  (conj points
-                                                                        {:x (+ (get-in xy-coordinates [dest :x])
-                                                                               (/ (get-in id->size [dest :width]) 2))
-                                                                         :y (get-in xy-coordinates [dest :y])})
-                                                                  (recur (get src->dest node)
-                                                                         (conj points
-                                                                               {:x (get-in xy-coordinates [node :x])
-                                                                                :y (get-in xy-coordinates [node :y])}))))])))
+                                                        [edge (loop [node (safe-get src->dest src)
+                                                                     points [src-point]
+                                                                     visited #{}]
+                                                                (if (contains? visited node)
+                                                                  (throw (ex-info (str "loop in edge: " edge " - " visited " - looped node: " node " - src->dest: " src->dest)
+                                                                                  {:visited visited
+                                                                                   :node node
+                                                                                   :edge edge
+                                                                                   :src->dest src->dest}))
+                                                                  (if (= node dest)
+                                                                    (conj points
+                                                                          {:x (+ (get-in xy-coordinates [dest :x])
+                                                                                 (/ (get-in id->size [dest :width]) 2))
+                                                                           :y (get-in xy-coordinates [dest :y])})
+                                                                    (recur (safe-get src->dest node)
+                                                                           (conj points
+                                                                                 {:x (+ (get-in xy-coordinates [node :x])
+                                                                                        (/ (get-in id->size [node :width]) 2))
+                                                                                  :y (get-in xy-coordinates [node :y])})
+                                                                           (conj visited node)))))])))
                                                edge->src->dest))
    :size                               (fnk [xy-coordinates]
                                          {:width  (->> xy-coordinates (vals) (map :x) (apply max))
@@ -731,7 +760,116 @@
 
 (defn hierarchical [id->size edges]
   (prn "id->size" id->size)
-  (let [lg (lay {:g        (apply graph/digraph edges)
-                 :id->size id->size})]
+  (let [input {:g        (apply graph/digraph edges)
+               :id->size id->size}
+        lg (lay input)]
     ;(select-keys lg [:size :xy-coordinates :edge->node-coordinates])
-    lg))
+    (merge lg input)))
+
+(defn selection-dependent-coords [layout-result selected-node-id]
+  (let [{original-dummy-graph :dummy-graph
+         original-node-to-layer :node-to-layer
+         original-layer-to-nodes :layer-to-nodes} layout-result
+        succs-selected (graph/successors original-dummy-graph selected-node-id)
+        selected-layer (get original-node-to-layer selected-node-id)
+        selection-dependent-node-to-layer (reduce (fn [m succ]
+                                                    (assoc m (if (map? succ)
+                                                               (:dest succ)
+                                                               succ)
+                                                             (dec selected-layer)))
+                                                  original-node-to-layer
+                                                  succs-selected)
+        selection-index (get-node-index (get original-layer-to-nodes selected-layer) selected-node-id)
+        selection-dependent-graph
+        (-> layout-graph
+            (assoc :node-to-layer (fnk []
+                                    selection-dependent-node-to-layer)
+                   :succs-selected (fnk [g selected-node]
+                                     (into #{}
+                                           (map (fn [node]
+                                                  (if (dummy? node)
+                                                    (:dest node)
+                                                    node)))
+                                           (graph/successors g selected-node)))
+                   :layer-to-nodes (fnk [unsorted-layer-to-nodes selected-node succs-selected]
+                                     (into {}
+                                           (map (fn [[layer unsorted-nodes]]
+                                                  (let [original-nodes (get original-layer-to-nodes layer)]
+                                                    [layer
+                                                     (vec (sort-by (fn [node]
+                                                                 (if (contains? succs-selected node)
+                                                                   [selection-index (or (get-node-index original-nodes node)
+                                                                                        (get-node-index original-nodes {:src   selected-node
+                                                                                                                        :dest  node
+                                                                                                                        :layer layer}))]
+                                                                   (if-let [prev-index (get-node-index original-nodes node)]
+                                                                     [prev-index nil]
+                                                                     [(or (get-node-index original-nodes (:src node))
+                                                                          (get-node-index original-nodes {:src   selected-node
+                                                                                                          :dest  (:src node)
+                                                                                                          :layer layer}))
+                                                                      (get-node-index (get original-layer-to-nodes (get original-node-to-layer (:dest node))) (:dest node))])))
+                                                               unsorted-nodes))])))
+                                           unsorted-layer-to-nodes))
+                   :all-short-edges (fnk [dummies g long-edges]
+                                      (set/difference (set/union (set (graph/edges g))
+                                                                 (set (:dummy-edges dummies)))
+                                                      long-edges))
+                   :upwards-edges (fnk [all-node-to-layer all-short-edges]
+                                    (into #{}
+                                          (filter (fn [[src dest]]
+                                                    ;; leaf layer has index 0
+                                                    (> (get all-node-to-layer dest) (get all-node-to-layer src))))
+                                          all-short-edges))
+                   :in-layer-edges (fnk [all-node-to-layer all-short-edges]
+                                     (into #{}
+                                           (filter (fn [[src dest]]
+                                                     ;; leaf layer has index 0
+                                                     (= (get all-node-to-layer dest) (get all-node-to-layer src))))
+                                           all-short-edges))
+                   :inverted-upwards-edges (fnk [upwards-edges]
+                                             (into #{}
+                                                   (map (comp vec reverse))
+                                                   upwards-edges))
+                   :all-valid-edges (fnk [all-short-edges upwards-edges in-layer-edges inverted-upwards-edges]
+                                      (println "val" upwards-edges)
+                                      (println "in-layer" in-layer-edges)
+                                      (println "inv-up" inverted-upwards-edges)
+                                      (-> all-short-edges
+                                          (set/difference (set/union upwards-edges in-layer-edges))
+                                          (set/union inverted-upwards-edges)))
+                   :edge->src->dest (fnk [dummy-graph upwards-edges]
+                                      (reduce (fn [acc [src dest]]
+                                                (assoc-in
+                                                  acc
+                                                  [[(if (dummy? src)
+                                                      (:src src)
+                                                      src)
+                                                    (if (dummy? dest)
+                                                      (:dest dest)
+                                                      dest)]
+                                                   src]
+                                                  dest))
+                                              {}
+                                              (concat (graph/edges dummy-graph)
+                                                      upwards-edges)))
+
+                   :dummy-graph
+                   (fnk [g dummies long-edges all-valid-edges]
+                     (println "all-valid" all-valid-edges)
+                     (-> g
+                         (graph/remove-edges* long-edges)
+                         (graph/add-nodes* (:dummy-nodes dummies))
+                         ;; this adds existing graph edges again, but it shouldn't matter for DiGraphs
+                         (graph/add-edges* all-valid-edges))
+                     #_(-> g
+                         (graph/remove-edges* long-edges)
+                         (graph/add-nodes* (:dummy-nodes dummies))
+                         (graph/add-edges* (:dummy-edges dummies))))
+                   )
+            (dissoc :crossing-minimized-layer-to-nodes)
+            (compile-cancelling))]
+    (merge layout-result
+           (selection-dependent-graph {:g             (:g layout-result)
+                                       :id->size      (:id->size layout-result)
+                                       :selected-node selected-node-id}))))
