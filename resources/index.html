@@ -37,10 +37,21 @@ svg path {
   transition: 0.7s;
 }
 
+.graph-node.selected {
+  box-shadow: 0 5px 15px rgba(0,0,0,0.7);
+}
+
+.graph-node.selected-adjacent {
+  box-shadow: 0 5px 15px rgba(0,0,0,0.3);
+}
+
+.graph-node.not-selected {
+  opacity: 0.4;
+}
+
     </style>
   </head>
   <body>
-    <h1>vizgraph</h1>
     <div id="container"></div>
     <script type="text/javascript" src="js/app.js"></script>
   </body>

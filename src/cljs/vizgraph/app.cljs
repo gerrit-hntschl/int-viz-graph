@@ -10,7 +10,9 @@
             [plumbing.core :refer [map-vals]]
             [plumbing.fnk.pfnk :as pfnk]
             [clojure.set :as set]
-
+            [goog.dom :as gdom]
+            goog.fx.dom
+            goog.fx.easing
             [goog.events :as gevents]
             )
   (:require-macros [vizgraph.core :refer [fnk]]))
@@ -19,6 +21,21 @@
   ISeqable
   (-seq [array] (array-seq array 0)))
 
+(defn get-viewport-size []
+  (let [window (gdom/getWindow)
+        viewport-size (gdom/getViewportSize window)]
+    {:width (.-width viewport-size)
+     :height (.-height viewport-size)}))
+
+(defn scroll! [el start end time]
+  (.play (goog.fx.dom.Scroll. el (clj->js start) (clj->js end) time goog.fx.easing/inAndOut)))
+
+
+(defn scroll-to! [dest-x-and-y animation-duration]
+  (scroll! (gdom/getDocumentScrollElement)
+           [(.-scrollX js/window) (.-scrollY js/window)]
+           dest-x-and-y
+           animation-duration))
 
 (enable-console-print!)
 
@@ -116,8 +133,9 @@
 
 
 (rum/defc positioned-node < rum/reactive
-  [id view node-coords-overrides child-coordinates result]
-  (let [overriden-coords (some-> (get node-coords-overrides id) (rum/react))]
+  [id view node-coords-overrides child-coordinates original-layout layout]
+  (let [overriden-coords (some-> (get node-coords-overrides id) (rum/react))
+        selected-node (:selected-node layout)]
     [:div {:style   {:top        (or
                                    (:y overriden-coords)
                                    (get-in child-coordinates [id :y]))
@@ -127,17 +145,23 @@
                                    (:x overriden-coords)
                                    (get-in child-coordinates [id :x]))
                      :transition "top 700ms, left 700ms"}
-           :class   "graph-node"
+           :class   (str "graph-node" (cond (= id selected-node)
+                                            " selected"
+                                            (contains? (:adjacent-selected layout) id)
+                                            " selected-adjacent"
+                                            selected-node
+                                            " not-selected"))
            :onClick (fn [e]
-                      (println "clicked:" id "- result:" result)
+                      (println "clicked:" id "- result:" original-layout)
                       (.preventDefault e)
                       (.stopPropagation e)
-                      (reset! selection-layout (layout/selection-dependent-coords result id)
-                              #_(doseq [succ succs-selected]
-                                  (when (:layer succ)
-                                    (let [dest (:dest succ)
-                                          coords (get xy-coordinates succ)]
-                                      (reset! (get node-coords-overrides dest) coords))))))}
+                      (reset! selection-layout (layout/selection-dependent-coords original-layout id))
+                      (let [{screen-width :width screen-height :height} (get-viewport-size)
+                            {node-width :width node-height :height} (get (:id->size layout) id)
+                            {dest-x :x dest-y :y} (get (:xy-coordinates @selection-layout) id)]
+                        (println "scroll" screen-width screen-height node-width node-height dest-x dest-y [(+ (/ node-width 2) (- dest-x (/ screen-width 2))) (+ (/ node-height 2) (- dest-y (/ screen-height 2)))])
+
+                        (scroll-to! [(+ (/ node-width 2) (- dest-x (/ screen-width 2))) (+ (/ node-height 2) (- dest-y (/ screen-height 2)))] 300)))}
 
      view]))
 
@@ -157,16 +181,15 @@
                                                    ::graph-size size
                                                    ::layout-result result)))}
   [state size-atom nodes edges]
-  (println "in layout")
   (let [original-layout (rum/react layout-result)
         result (or (rum/react selection-layout)
                    original-layout)
         child-coordinates (or (:xy-coordinates result)
                               (map #(update % 0 str) (iterate #(update % 0 inc) [0 0])))
         node-coords-overrides (::node-coords-overrides state)]
-    [:div {:style {:position "relative"}
+    [:div {:style   {:position   "relative"
+                     :transition "opacity 0.3s ease-in-out"}
            :onClick (fn [e]
-                      (println "resetting layout")
                       (.preventDefault e)
                       (.stopPropagation e)
                       (reset! selection-layout nil))}
@@ -182,35 +205,43 @@
                  :refY "5"
                  :orient "auto"}
         [:polyline {:points "0,0 10,5 0,10 1,5"}]]]
-      (map (fn [edge]
-             (println "edge" edge)
-             (let [node-coordinates (get (:edge->node-coordinates result) edge)]
-               (when (seq node-coordinates)
-                 #_[:polyline {:key        (str edge)
-                             :id         (str edge)
-                             :marker-end "url(#arrow)"
-                             :fill       "none"
-                             :stroke     "black"
-                             :points     (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
-                                                            node-coordinates))
-                             :style      {:stroke       "#000000"
-                                          :stroke-width 1}}]
-                 [:path {:d          (str "M" (str/join "," ((juxt :x :y) (first node-coordinates)))
-                                          " C" (str/join ", " ((juxt :x :y) ((if (< (count node-coordinates) 4)
-                                                                               first
-                                                                               second)
-                                                                              node-coordinates)))
-                                          " " (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
-                                                                 (take-last 2 node-coordinates))))
-                         :fill       "transparent"
-                         :stroke     "black"
-                         :marker-end "url(#arrow)"
-                         :key        (str edge)
-                         :id         (str edge)}])))
-           edges)]
+      (let [highlighted? (if-let [selected (:selected-node result)]
+                           (let [highlighted-nodes (conj (:adjacent-selected result) selected)]
+                             (fn [[src dest]]
+                               (and (contains? highlighted-nodes src)
+                                    (contains? highlighted-nodes dest))))
+                           (constantly true))]
+        (map (fn [edge]
+              (let [node-coordinates (get (:edge->node-coordinates result) edge)]
+                (when (seq node-coordinates)
+                  #_[:polyline {:key        (str edge)
+                                :id         (str edge)
+                                :marker-end "url(#arrow)"
+                                :fill       "none"
+                                :stroke     "black"
+                                :points     (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
+                                                               node-coordinates))
+                                :style      {:stroke       "#000000"
+                                             :stroke-width 1}}]
+                  ;; always use 4 points to allow animating the path for nodes moving several layers
+                  [:path (cond-> {:d          (str "M" (str/join "," ((juxt :x :y) (first node-coordinates)))
+                                                   " C" (str/join ", " ((juxt :x :y) ((if (< (count node-coordinates) 4)
+                                                                                        first
+                                                                                        second)
+                                                                                       node-coordinates)))
+                                                   " " (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
+                                                                          (take-last 2 node-coordinates))))
+                                  :fill       "transparent"
+                                  :stroke     "black"
+                                  :marker-end "url(#arrow)"
+                                  :key        (str edge)
+                                  :id         (str edge)}
+                                 (not (highlighted? edge))
+                                 (assoc :stroke-opacity "0.4"))])))
+            edges))]
      [:div
       (map (fn [{:node/keys [view id]}]
-             (rum/with-key (positioned-node id view node-coords-overrides child-coordinates original-layout) id))
+             (rum/with-key (positioned-node id view node-coords-overrides child-coordinates original-layout result) id))
            nodes)]]))
 
 #_(def example-graph {:topology-sorted                    (fnk [g]
