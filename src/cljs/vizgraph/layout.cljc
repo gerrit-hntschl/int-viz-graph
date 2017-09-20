@@ -76,11 +76,16 @@
                         direction-fn
                         layer-indices
                         next-layer-neighbors-fn
-                        next-layer-index-fn]
+                        next-layer-index-fn
+                        node->index]
   (let [vs (graph/nodes dummy-graph)
         v->root (atom (zipmap vs vs))
         v->align (atom (zipmap vs vs))
-        layer-to-nodes (map-vals direction-fn layer-to-nodes)]
+        layer-to-nodes (map-vals direction-fn layer-to-nodes)
+        node->index (->> layer-to-nodes
+                         (vals)
+                         (mapcat (fn [nodes] (map-indexed (fn [i node] [node i]) nodes)))
+                         (into {}))]
     (println "\n--------------- alignment -------------")
     (println "height" height)
     (doseq [i layer-indices]
@@ -105,7 +110,7 @@
                 (println "m" m)
                 (when (= (get @v->align vki) vki)
                   (let [um (get ordered-next-layer-neighbors-vki m)
-                        pos-um (get-node-index next-layer-nodes um)]
+                        pos-um (get node->index um)]
                     (println "um" um)
                     (println "pos[um]" pos-um)
                     (when (and (not (contains? type-1-conflicts
@@ -120,7 +125,7 @@
     {:root  @v->root
      :align @v->align}))
 
-(defn horizontal-compaction [vertical-alignment dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-and-block-size]
+(defn horizontal-compaction [vertical-alignment dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-and-block-size node->index]
   (let [vs (graph/nodes dummy-graph)
         v->root (:root vertical-alignment)
         v->align (:align vertical-alignment)
@@ -131,7 +136,7 @@
         predecessor-fn (fn [v]
                          (let [v-layer (get layer-to-nodes
                                             (get all-node-to-layer v))
-                               v-index (get-node-index v-layer v)]
+                               v-index (get node->index v)]
                            (println "pred v" v "v-index" v-index " -> " (when (pos? v-index)
                                                                           (get v-layer (dec v-index))))
                            (when (pos? v-index)
@@ -256,7 +261,8 @@
 
 (defn crossing-count [g order layer-index]
   (let [layer (get order layer-index)
-        succ-layer (get order (dec layer-index))]
+        succ-layer (get order (dec layer-index))
+        node->index (into {} (map-indexed (fn [i node] [node i]) succ-layer))]
     (->> layer
          (reduce (fn [{:keys [prevs cross-count]} node]
                    (let [succs-indices (map (partial get-node-index succ-layer) (graph/successors g node))]
@@ -354,13 +360,13 @@
             [best-crossing-count :as last-crossing-counts] (list (crossing-count-for-ordering dummy-graph height initial-order))]
        (if (or (>= i 24)
                (no-real-improvement? last-crossing-counts))
-         (do (println "best crossingcount:" (crossing-count-for-ordering dummy-graph height best)
+         (do #_(println "best crossingcount:" (crossing-count-for-ordering dummy-graph height best)
                       "initial crossingcount:" (crossing-count-for-ordering dummy-graph height initial-order))
              best)
          (let [[layer-indices next-layer-fn neighbours-fn]
                (alternating-directions dummy-graph height i)
                order (weighted-median-sorted best layer-indices next-layer-fn neighbours-fn fixed-position-nodes)
-               _ (println "weighted order:" (crossing-count-for-ordering dummy-graph height order))
+               ;_ (println "weighted order:" (crossing-count-for-ordering dummy-graph height order))
                transposed-order (transpose dummy-graph height order)
                new-crossing-count (crossing-count-for-ordering dummy-graph height transposed-order)]
            (println "new CC:" new-crossing-count)
@@ -463,11 +469,10 @@
                                                            :layer
                                                            (graph/predecessors dummy-graph dummy-vertex))))
                                                (:dummy-nodes dummies)))
-   :type-1-conflicts                   (fnk [height vertices-incident-to-inner-segment layer-to-nodes dummy-graph]
+   :type-1-conflicts                   (fnk [height vertices-incident-to-inner-segment layer-to-nodes dummy-graph node->index]
                                          (let [marked (atom #{})]
                                            (doseq [i (range (- height 2) 1 -1)]
-                                             (println)
-                                             (println "-----------------")
+                                             (println "\n-----------------")
                                              (println "Li" i)
                                              (let [k0 (atom 0)
                                                    l (atom 0)
@@ -484,7 +489,8 @@
                                                                              vl1Li+1)
                                                                 (do (println "vl1Li+1 inner segment")
                                                                     (let [upper-neighbor (first (graph/predecessors dummy-graph vl1Li+1))]
-                                                                      (get-node-index (get layer-to-nodes i)
+                                                                      (safe-get node->index upper-neighbor)
+                                                                      #_(get-node-index (get layer-to-nodes i)
                                                                                       upper-neighbor)))
                                                                 (dec (count (get layer-to-nodes i))))]
                                                        (println "k1" k1)
@@ -494,8 +500,7 @@
                                                            (println "vli+1" vli+1)
                                                            (doseq [upper-neighbor-vki (graph/predecessors dummy-graph vli+1)]
                                                              (println "upper-neighbor-vki" upper-neighbor-vki)
-                                                             (let [k (get-node-index (get layer-to-nodes i)
-                                                                                     upper-neighbor-vki)]
+                                                             (let [k (safe-get node->index upper-neighbor-vki)]
                                                                (println "k" k)
                                                                (when (or (< k @k0) (> k k1))
                                                                  (println "marked: (< k @k0)" (< k @k0) "(> k k1)" (> k k1) "edge" #{upper-neighbor-vki vli+1})
@@ -505,8 +510,13 @@
                                                        (println "k0" @k0)))))))
                                            (prn "conflifliu" @marked)
                                            @marked))
-   :vertical-alignment-up-left         (fnk [dummy-graph height layer-to-nodes type-1-conflicts]
-                                         (println "up left align")
+   :node->index                        (fnk [layer-to-nodes]
+                                         (->> layer-to-nodes
+                                              (vals)
+                                              (mapcat (fn [nodes] (map-indexed (fn [i node] [node i]) nodes)))
+                                              (into {})))
+   :vertical-alignment-up-left         (fnk [dummy-graph height layer-to-nodes type-1-conflicts node->index]
+                                         (println "up left align" )
                                          (align-vertically dummy-graph
                                                            height
                                                            layer-to-nodes
@@ -514,18 +524,20 @@
                                                            identity
                                                            (range (- height 2) -1 -1)
                                                            graph/predecessors
-                                                           inc))
+                                                           inc
+                                                           node->index))
    :inner-shift-up-left                (fnk [dummy-graph id->size vertical-alignment-up-left]
                                          (inner-shift dummy-graph id->size vertical-alignment-up-left))
-   :horizontal-compaction-up-left      (fnk [vertical-alignment-up-left dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-up-left]
+   :horizontal-compaction-up-left      (fnk [vertical-alignment-up-left dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-up-left node->index]
                                          (println "\n -------------- compaction up left ------------")
                                          (horizontal-compaction vertical-alignment-up-left
                                                                 dummy-graph
                                                                 layer-to-nodes
                                                                 all-node-to-layer
                                                                 id->size
-                                                                inner-shift-up-left))
-   :vertical-alignment-up-right        (fnk [dummy-graph height layer-to-nodes type-1-conflicts]
+                                                                inner-shift-up-left
+                                                                node->index))
+   :vertical-alignment-up-right        (fnk [dummy-graph height layer-to-nodes type-1-conflicts node->index]
                                          (align-vertically dummy-graph
                                                            height
                                                            layer-to-nodes
@@ -533,18 +545,20 @@
                                                            (comp vec reverse)
                                                            (range (- height 2) -1 -1)
                                                            graph/predecessors
-                                                           inc))
+                                                           inc
+                                                           node->index))
    :inner-shift-up-right               (fnk [dummy-graph id->size vertical-alignment-up-right]
                                          (inner-shift dummy-graph id->size vertical-alignment-up-right))
-   :horizontal-compaction-up-right     (fnk [vertical-alignment-up-right dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-up-right]
+   :horizontal-compaction-up-right     (fnk [vertical-alignment-up-right dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-up-right node->index]
                                          (println "\n -------------- compaction ------------")
                                          (horizontal-compaction vertical-alignment-up-right
                                                                 dummy-graph
                                                                 layer-to-nodes
                                                                 all-node-to-layer
                                                                 id->size
-                                                                inner-shift-up-right))
-   :vertical-alignment-down-left       (fnk [dummy-graph height layer-to-nodes type-1-conflicts]
+                                                                inner-shift-up-right
+                                                                node->index))
+   :vertical-alignment-down-left       (fnk [dummy-graph height layer-to-nodes type-1-conflicts node->index]
                                          (println "\n -------------- vertical alignment DLDL ------------")
                                          (align-vertically dummy-graph
                                                            height
@@ -553,15 +567,16 @@
                                                            identity
                                                            (range 0 height)
                                                            graph/successors
-                                                           dec))
+                                                           dec
+                                                           node->index))
    :inner-shift-down-left              (fnk [dummy-graph id->size vertical-alignment-down-left]
                                          (prn {:vadl vertical-alignment-down-left})
                                          (inner-shift dummy-graph id->size vertical-alignment-down-left))
-   :horizontal-compaction-down-left    (fnk [vertical-alignment-down-left dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-down-left]
+   :horizontal-compaction-down-left    (fnk [vertical-alignment-down-left dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-down-left node->index]
                                          (println "\n -------------- compaction ------------ down left")
                                          (println "\n \n layer-to-nodes" (get layer-to-nodes 8))
-                                         (horizontal-compaction vertical-alignment-down-left dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-down-left))
-   :vertical-alignment-down-right      (fnk [dummy-graph height layer-to-nodes type-1-conflicts]
+                                         (horizontal-compaction vertical-alignment-down-left dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-down-left node->index))
+   :vertical-alignment-down-right      (fnk [dummy-graph height layer-to-nodes type-1-conflicts node->index]
                                          (align-vertically dummy-graph
                                                            height
                                                            layer-to-nodes
@@ -569,17 +584,19 @@
                                                            (comp vec reverse)
                                                            (range 0 height)
                                                            graph/successors
-                                                           dec))
+                                                           dec
+                                                           node->index))
    :inner-shift-down-right             (fnk [dummy-graph id->size vertical-alignment-down-right]
                                          (inner-shift dummy-graph id->size vertical-alignment-down-right))
-   :horizontal-compaction-down-right   (fnk [vertical-alignment-down-right dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-down-right]
+   :horizontal-compaction-down-right   (fnk [vertical-alignment-down-right dummy-graph layer-to-nodes all-node-to-layer id->size inner-shift-down-right node->index]
                                          (println "\n -------------- compaction ------------")
                                          (horizontal-compaction vertical-alignment-down-right
                                                                 dummy-graph
                                                                 layer-to-nodes
                                                                 all-node-to-layer
                                                                 id->size
-                                                                inner-shift-down-right))
+                                                                inner-shift-down-right
+                                                                node->index))
    :smallest-width-alignment-lo-hi     (fnk [horizontal-compaction-up-left
                                              horizontal-compaction-up-right
                                              horizontal-compaction-down-left
@@ -695,9 +712,9 @@
                                                                      visited #{}]
                                                                 (if (contains? visited node)
                                                                   (throw (ex-info (str "loop in edge: " edge " - " visited " - looped node: " node " - src->dest: " src->dest)
-                                                                                  {:visited visited
-                                                                                   :node node
-                                                                                   :edge edge
+                                                                                  {:visited   visited
+                                                                                   :node      node
+                                                                                   :edge      edge
                                                                                    :src->dest src->dest}))
                                                                   (if (= node dest)
                                                                     (conj points
@@ -766,6 +783,7 @@
     ;(select-keys lg [:size :xy-coordinates :edge->node-coordinates])
     (merge lg input)))
 
+
 (def selection-dependent-graph
   (-> layout-graph
       (assoc :selected-layer (fnk [original-node-to-layer selected-node]
@@ -800,32 +818,36 @@
                             (get-in original-xy-coordinates [selected-node :x]))
              :original-node-to-x (fnk [original-xy-coordinates]
                                    (map-vals :x original-xy-coordinates))
-             :layer-to-nodes (fnk [unsorted-layer-to-nodes selected-node adjacent-selected selection-x original-node-to-x]
-                               (into {}
-                                     (map (fn [[layer unsorted-nodes]]
-                                            [layer
-                                             (vec (sort-by (fn [node]
-                                                             (if (contains? adjacent-selected node)
-                                                               [selection-x (or (get original-node-to-x node)
-                                                                                (get original-node-to-x {:src   selected-node
-                                                                                                         :dest  node
-                                                                                                         :layer layer})
-                                                                                (safe-get original-node-to-x {:src   node
-                                                                                                              :dest  selected-node
-                                                                                                              :layer layer}))]
-                                                               (if-let [prev-x (get original-node-to-x node)]
-                                                                 [prev-x nil]
-                                                                 [(or (get original-node-to-x (:src node))
-                                                                      (get original-node-to-x (:dest node))
-                                                                      (get original-node-to-x {:src   selected-node
-                                                                                               :dest  (:src node)
-                                                                                               :layer layer})
-                                                                      (safe-get original-node-to-x {:src   (:dest node)
-                                                                                                    :dest  selected-node
-                                                                                                    :layer layer}))
-                                                                  (safe-get original-node-to-x (:dest node))])))
-                                                           unsorted-nodes))]))
-                                     unsorted-layer-to-nodes))
+             :layer-to-nodes (fnk [unsorted-layer-to-nodes original-layer-to-nodes selected-node adjacent-selected selection-x original-node-to-x]
+                               (let [result (into {}
+                                                  (map (fn [[layer unsorted-nodes]]
+                                                         [layer
+                                                          (vec (sort-by (fn [node]
+                                                                          (if (contains? adjacent-selected node)
+                                                                            [selection-x (or (get original-node-to-x node)
+                                                                                             (get original-node-to-x {:src   selected-node
+                                                                                                                      :dest  node
+                                                                                                                      :layer layer})
+                                                                                             (safe-get original-node-to-x {:src   node
+                                                                                                                           :dest  selected-node
+                                                                                                                           :layer layer}))]
+                                                                            (if-let [prev-x (get original-node-to-x node)]
+                                                                              [prev-x nil]
+                                                                              [(or (get original-node-to-x (:src node))
+                                                                                   (get original-node-to-x (:dest node))
+                                                                                   (get original-node-to-x {:src   selected-node
+                                                                                                            :dest  (:src node)
+                                                                                                            :layer layer})
+                                                                                   (safe-get original-node-to-x {:src   (:dest node)
+                                                                                                                 :dest  selected-node
+                                                                                                                 :layer layer}))
+                                                                               (safe-get original-node-to-x (:dest node))])))
+                                                                        
+                                                                        unsorted-nodes))]))
+                                                  unsorted-layer-to-nodes)]
+                                 (prn "sososo" result)
+                                 (prn "unsusu" original-layer-to-nodes)
+                                 result))
              :all-short-edges (fnk [dummies g long-edges]
                                 (set/difference (set/union (set (graph/edges g))
                                                            (set (:dummy-edges dummies)))

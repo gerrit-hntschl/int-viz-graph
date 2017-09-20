@@ -5,7 +5,6 @@
             [clojure.string :as str]
             [loom.graph :as graph]
             [cljs.reader :as reader]
-            [schema.core :as schema]
             [vizgraph.layout :as layout]
             [plumbing.core :refer [map-vals]]
             [plumbing.fnk.pfnk :as pfnk]
@@ -39,35 +38,35 @@
 
 (enable-console-print!)
 
-(def layout-result (atom nil))
-
-(def selection-layout (atom nil))
-
 (def sized {:did-mount (fn [state]
                          (let [component (:rum/react-component state)
                                dom-node (rum/dom-node state)
                                [size-atom comp-name] (:rum/args state)
-                               size {:width  (.-offsetWidth dom-node) ;(.-scrollWidth dom-node)
-                                     :height (.-offsetHeight dom-node) ;(.-scrollHeight dom-node)
+                               size {:width  (+ 5 (.-scrollWidth dom-node)) ;(.-offsetWidth dom-node) ;(.-scrollWidth dom-node)
+                                     :height (+ 5 (.-scrollHeight dom-node)) ;(.-offsetHeight dom-node) ;(.-scrollHeight dom-node)
                                      }]
                            (rum/request-render component)
                            (swap! size-atom assoc comp-name size)
+                           (assoc state ::size size)))
+            :did-update
+                       (fn [state]
+
+
+                         (let [component (:rum/react-component state)
+                               dom-node (rum/dom-node state)
+                               [size-atom comp-name] (:rum/args state)
+                               size {:width  (.-scrollWidth dom-node) ;(.-offsetWidth dom-node)
+                                     :height (.-scrollHeight dom-node) ;(.-offsetHeight dom-node)
+                                     }
+                               prev-size (get @size-atom comp-name)]
+                           (println "SIZED DID UPDATE" (-> state :rum/args second) size prev-size #_{:scrollWidht  (.-scrollWidth dom-node)
+                                                                                                   :scrollHeight (.-scrollHeight dom-node)})
+                           ;state
+                           (when-not (= size prev-size)
+                               (rum/request-render component)
+                               (swap! size-atom assoc comp-name size))
                            (assoc state ::size size)))})
 
-(rum/defcs label < sized
-
-  [state size-atom text]
-  (println "render label" (::size state))
-  [:div {:style (cond-> (merge {:border    "1px solid"
-                                :borderRadius "5px"
-                                :max-width "300px"
-                                :min-width "40px"}
-                               (::size state))
-                        (::size state)
-                        (dissoc :max-width)
-                        )}
-   [:p text]
-   ])
 
 (defn formatted-code [source input-keys]
   (let [input-names (into #{}
@@ -113,7 +112,24 @@
     {:style {:text-align "center"
              :border-bottom "1px solid black"}}
     node-name]
+   (formatted-code (:source (meta keywordfn)) (pfnk/input-schema-keys keywordfn))])
+
+(rum/defcs code-val-node < sized                                ;keyed
+  [state size-atom node-name node-val keywordfn]
+  [:div {:style (cond-> (merge {:border          "1px solid"
+                                :backgroundColor "white"
+                                :borderRadius    "5px"
+                                :maxWidth        "500px"
+                                :minWidth        "40px"}
+                               (::size state))
+                        (::size state)
+                        (dissoc :maxWidth))}
+   [:div.node-header
+    {:style {:text-align    "center"
+             :border-bottom "1px solid black"}}
+    node-name]
    (formatted-code (:source (meta keywordfn)) (pfnk/input-schema-keys keywordfn))
+   (str node-val)
    ])
 
 (rum/defcs input-node < sized                                ;keyed
@@ -131,19 +147,28 @@
              :background-color "lightgreen"}}
     node-name]])
 
+(rum/defcs input-val-node < sized                                ;keyed
+  [state size-atom node-name node-val]
+  [:div {:style (cond-> (merge {:border    "1px solid"
+                                :borderRadius "5px"
+                                :maxWidth "500px"
+                                :minWidth "40px"}
+                               (::size state))
+                        (::size state)
+                        (dissoc :maxWidth))}
+   [:div.node-header
+    {:style {:text-align "center"
+             :border-bottom "1px solid black"
+             :background-color "lightgreen"}}
+    node-name]
+   [:div (str node-val)]])
 
 (rum/defc positioned-node < rum/reactive
-  [id view node-coords-overrides child-coordinates original-layout layout]
-  (let [overriden-coords (some-> (get node-coords-overrides id) (rum/react))
-        selected-node (:selected-node layout)]
-    [:div {:style   {:top        (or
-                                   (:y overriden-coords)
-                                   (get-in child-coordinates [id :y]))
+  [id view child-coordinates original-layout layout selection-layout]
+  (let [selected-node (:selected-node layout)]
+    [:div {:style   {:top        (get-in child-coordinates [id :y])
                      :position   "absolute"
-                     :left       (or
-
-                                   (:x overriden-coords)
-                                   (get-in child-coordinates [id :x]))
+                     :left       (get-in child-coordinates [id :x])
                      :transition "top 700ms, left 700ms"}
            :class   (str "graph-node" (cond (= id selected-node)
                                             " selected"
@@ -157,92 +182,134 @@
                       (.stopPropagation e)
                       (reset! selection-layout (layout/selection-dependent-coords original-layout id))
                       (let [{screen-width :width screen-height :height} (get-viewport-size)
+                            node-root-y (+ (.-scrollY js/window) (.-top (.getBoundingClientRect (gdom/getAncestorByClass (.-target e) "graph-root"))))
                             {node-width :width node-height :height} (get (:id->size layout) id)
-                            {dest-x :x dest-y :y} (get (:xy-coordinates @selection-layout) id)]
-                        (println "scroll" screen-width screen-height node-width node-height dest-x dest-y [(+ (/ node-width 2) (- dest-x (/ screen-width 2))) (+ (/ node-height 2) (- dest-y (/ screen-height 2)))])
-
+                            {dest-x :x graph-y :y} (get (:xy-coordinates @selection-layout) id)
+                            dest-y (+ node-root-y graph-y)]
+                        (println "scroll" (.-scrollY js/window) node-root-y graph-y screen-width screen-height node-width node-height dest-x dest-y [(+ (/ node-width 2) (- dest-x (/ screen-width 2))) (+ (/ node-height 2) (- dest-y (/ screen-height 2)))])
                         (scroll-to! [(+ (/ node-width 2) (- dest-x (/ screen-width 2))) (+ (/ node-height 2) (- dest-y (/ screen-height 2)))] 300)))}
-
      view]))
 
+
+(defn get-graph-nodes [g]
+  (into #{} (concat (mapcat pfnk/input-schema-keys (vals g)) (keys g))))
+
+(defn get-graph-edges [g nodes]
+  (->> nodes
+       (map (juxt identity
+                  (fn [node] (some-> (get g node) (pfnk/input-schema-keys)))))
+       (filter (comp some? second))
+       (mapcat (fn [[dest srcs]]
+                 (map (fn [src]
+                        [(name src) (name dest)])
+                      srcs)))))
+
 (rum/defcs layout < rum/reactive
-                    {:did-mount (fn [state]
-                                  (println "layout did-mount")
-                                  (let [[size-atom nodes edges] (:rum/args state)
-                                        {:keys [xy-coordinates edge->node-coordinates size dummy-graph] :as result} (layout/hierarchical @size-atom edges)]
-                                    (reset! layout-result result)
-                                    ;(rum/request-render (:rum/react-component state))
-                                    (assoc state ::node-coords-overrides (into {}
-                                                                               (map (fn [node]
-                                                                                      [node (atom nil)]))
-                                                                               (graph/nodes dummy-graph)))
-                                    #_(assoc state ::id->coordinates xy-coordinates
-                                                   ::all-edges edge->node-coordinates
-                                                   ::graph-size size
-                                                   ::layout-result result)))}
-  [state size-atom nodes edges]
-  (let [original-layout (rum/react layout-result)
-        result (or (rum/react selection-layout)
+                    {:did-mount     (fn [state]
+                                      (let [[size-atom nodes edges] (:rum/args state)
+                                            component (:rum/react-component state)
+                                            result (layout/hierarchical @size-atom edges)]
+                                        (reset! (::layout-result state) result)
+                                        (add-watch size-atom ::layout-size-change (fn [_ _ old new]
+                                                                                    (println "SIZE CHANGE")
+                                                                                    (rum/request-render component)
+                                                                                    ;; don't recalculate here as there might be multiple size changes in one render
+                                                                                    (reset! (::resize-render state) true)))
+                                        (assoc state ::mounted true)))}
+                    (rum/local false ::resize-render)
+                    (rum/local nil ::layout-result)
+                    (rum/local nil ::selection-layout)
+  [state size-atom nodes edges render-self?]
+  (let [original-layout (rum/react (::layout-result state))
+        selection-layout (rum/react (::selection-layout state))
+        ;        _ (rum/react size-atom)
+        result (or selection-layout
                    original-layout)
-        child-coordinates (or (:xy-coordinates result)
-                              (map #(update % 0 str) (iterate #(update % 0 inc) [0 0])))
-        node-coords-overrides (::node-coords-overrides state)]
-    [:div {:style   {:position   "relative"
-                     :transition "opacity 0.3s ease-in-out"}
-           :onClick (fn [e]
-                      (.preventDefault e)
-                      (.stopPropagation e)
-                      (reset! selection-layout nil))}
-     [:svg (or (map-vals (partial + 150) (:size result)) {})
-      [:defs
-       [:marker {:id "arrow"
-                 :markerWidth "14"
-                 :markerHeight "10"
-                 :markerUnits "strokeWidth"
-                 :viewBox "0 0 10 10"
-                 :preserveAspectRatio "xMidYMid meet"
-                 :refX "10"
-                 :refY "5"
-                 :orient "auto"}
-        [:polyline {:points "0,0 10,5 0,10 1,5"}]]]
-      (let [highlighted? (if-let [selected (:selected-node result)]
-                           (let [highlighted-nodes (conj (:adjacent-selected result) selected)]
-                             (fn [[src dest]]
-                               (and (contains? highlighted-nodes src)
-                                    (contains? highlighted-nodes dest))))
-                           (constantly true))]
-        (map (fn [edge]
-              (let [node-coordinates (get (:edge->node-coordinates result) edge)]
-                (when (seq node-coordinates)
-                  #_[:polyline {:key        (str edge)
-                                :id         (str edge)
-                                :marker-end "url(#arrow)"
-                                :fill       "none"
-                                :stroke     "black"
-                                :points     (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
-                                                               node-coordinates))
-                                :style      {:stroke       "#000000"
-                                             :stroke-width 1}}]
-                  ;; always use 4 points to allow animating the path for nodes moving several layers
-                  [:path (cond-> {:d          (str "M" (str/join "," ((juxt :x :y) (first node-coordinates)))
-                                                   " C" (str/join ", " ((juxt :x :y) ((if (< (count node-coordinates) 4)
-                                                                                        first
-                                                                                        second)
-                                                                                       node-coordinates)))
-                                                   " " (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
-                                                                          (take-last 2 node-coordinates))))
-                                  :fill       "transparent"
-                                  :stroke     "black"
+        child-coordinates (:xy-coordinates result)
+        resize-render? (rum/react (::resize-render state))]
+    (when resize-render?
+
+      (println "rezeizeizeizei")
+      (reset! (::resize-render state) false))
+    [:div
+     [:div {:style   {:position   "relative"
+                      :transition "opacity 0.3s ease-in-out"}
+            :class "graph-root"
+            :onClick (fn [e]
+                       (.preventDefault e)
+                       (.stopPropagation e)
+                       (reset! (::selection-layout state) nil)
+                       ;(reset! selection-layout-atom nil)
+                       )}
+      [:svg (or (map-vals (partial + 150) (:size result)) {})
+       [:defs
+        [:marker {:id                  "arrow"
+                  :markerWidth         "14"
+                  :markerHeight        "10"
+                  :markerUnits         "strokeWidth"
+                  :viewBox             "0 0 10 10"
+                  :preserveAspectRatio "xMidYMid meet"
+                  :refX                "10"
+                  :refY                "5"
+                  :orient              "auto"}
+         [:polyline {:points "0,0 10,5 0,10 1,5"}]]]
+       (let [highlighted? (if-let [selected (:selected-node result)]
+                            (let [highlighted-nodes (conj (:adjacent-selected result) selected)]
+                              (fn [[src dest]]
+                                (and (contains? highlighted-nodes src)
+                                     (contains? highlighted-nodes dest))))
+                            (constantly true))]
+         (map (fn [edge]
+                (let [node-coordinates (get (:edge->node-coordinates result) edge)]
+                  (when (seq node-coordinates)
+                    #_[:polyline {:key        (str edge)
+                                  :id         (str edge)
                                   :marker-end "url(#arrow)"
-                                  :key        (str edge)
-                                  :id         (str edge)}
-                                 (not (highlighted? edge))
-                                 (assoc :stroke-opacity "0.4"))])))
-            edges))]
-     [:div
-      (map (fn [{:node/keys [view id]}]
-             (rum/with-key (positioned-node id view node-coords-overrides child-coordinates original-layout result) id))
-           nodes)]]))
+                                  :fill       "none"
+                                  :stroke     "black"
+                                  :points     (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
+                                                                 node-coordinates))
+                                  :style      {:stroke       "#000000"
+                                               :stroke-width 1}}]
+                    ;; always use 4 points to allow animating the path for nodes moving several layers
+                    [:path (cond-> {:d          (str "M" (str/join "," ((juxt :x :y) (first node-coordinates)))
+                                                     " C" (str/join ", " ((juxt :x :y) ((if (< (count node-coordinates) 4)
+                                                                                          first
+                                                                                          second)
+                                                                                         node-coordinates)))
+                                                     " " (str/join " " (map (fn [{:keys [x y]}] (str x "," y))
+                                                                            (take-last 2 node-coordinates))))
+                                    :fill       "transparent"
+                                    :stroke     "black"
+                                    :marker-end "url(#arrow)"
+                                    :key        (str edge)
+                                    :id         (str edge)}
+                                   (not (highlighted? edge))
+                                   (assoc :stroke-opacity "0.4"))])))
+              edges))]
+      [:div
+       (map (fn [{:node/keys [view id]}]
+              (rum/with-key (positioned-node id view child-coordinates original-layout result (::selection-layout state) ;selection-layout
+                                             ) id))
+            nodes)]]
+     (when (= ::render-self render-self?)
+       (layout size-atom
+                 (concat
+                   (map (fn [[node-name keywordfn]]
+                          {:node/view (code-val-node size-atom (name node-name) (get result node-name) keywordfn) ;(code-node size-atom (name node-name) keywordfn)
+                           :node/id   (name node-name)})
+                        layout/layout-graph)
+                   (map (fn [node-name]
+                          {:node/view (input-val-node size-atom (name node-name) (get result node-name))
+
+                           :node/id   (name node-name)})
+                        (set/difference (into #{}
+                                              (mapcat pfnk/input-schema-keys)
+                                              (vals layout/layout-graph))
+                                        (into #{}
+                                              (keys layout/layout-graph)))))
+                 (get-graph-edges layout/layout-graph (get-graph-nodes layout/layout-graph))
+                 ::dont-render-self))]))
 
 #_(def example-graph {:topology-sorted                    (fnk [g]
                                                           (alg/topsort g))
@@ -544,7 +611,7 @@
    :domain-users-new                 (fnk [jira-users-new]
                                        )})
 
-(def example-graph
+#_(def example-graph
   ;; input:
   ;; dbval :- Datomic database value,
   ;; today :- Date of today with time 1 millisecond before tomorrow
@@ -614,6 +681,51 @@
                                          )
      :db-transactions-stats            (fnk [domain-users-new domain-customers-new tickets-new domain-worklogs-deleted domain-worklogs-new]
                                          )}))
+
+(def rr {:recipe/ingredients [{:ingredient/food "asparagus"
+                        :ingredient/amount "5"}
+                       {:ingredient/food "vegetable_stock"
+                        :ingredient/amount "1 l"}]
+         :recipe/name "Asparagus soup"
+         })
+
+(def foods [{:food/id "asparagus"
+             :food/names #{"Asparagus" "Sparrowgrass"}
+             :food/category :food-category/vegetable
+             :food/season #{:season/spring}}
+            {:food/id    "vegetable_stock"
+             :food/names #{"Vegetable Stock"}
+             :food/season #{:season/spring :season/winter :season/summer :season/autumn}
+             }])
+
+(def example-graph
+  {:ingredients            (fnk [recipe]
+                             (:recipe/ingredients recipe))
+   :food-id->food          (fnk [foods]
+                             (into {} (map (juxt :food/id identity) foods)))
+   :recipe-foods           (fnk [ingredients food-id->food]
+                             (map (comp food-id->food :ingredient/food) ingredients))
+   :recipe-food-categories (fnk [recipe-foods]
+                             (into #{} (map :food/category) recipe-foods))
+   :vegetarian?            (fnk [recipe-food-categories]
+                             (every? #{:food-category/vegetable :food-category/animal-produce} recipe-food-categories))
+   :recipe-food-seasons    (fnk [recipe-foods]
+                             (map :food/season recipe-foods))
+
+   :recipe-seasons         (fnk [recipe-food-seasons]
+                             ;(reduce set/intersection recipe-food-seasons)
+                             )
+   :in-season?             (fnk [current-season recipe-seasons]
+                             (contains? recipe-seasons current-season))
+   :recommended?           (fnk [in-season? vegetarian?]
+                             (and in-season? vegetarian?))})
+
+(def example-graph-val (merge {:recipe         rr
+                               :foods          foods
+                               :current-season :season/spring}
+                              ((plumbing.graph/compile example-graph) {:recipe         rr
+                                                                 :foods          foods
+                                                                 :current-season :season/spring})))
 
 #_(def example-graph {:x             (fnk [a]
                                      (+ a 5))
@@ -706,82 +818,24 @@
 #_(def example-graph layout/layout-graph)
 
 
-(defn get-graph-nodes [g]
-  (into #{} (concat (mapcat pfnk/input-schema-keys (vals g)) (keys g))))
-
-(defn get-graph-edges [g nodes]
-  (->> nodes
-       (map (juxt identity
-                  (fn [node] (some-> (get g node) (pfnk/input-schema-keys)))))
-       (filter (comp some? second))
-       (mapcat (fn [[dest srcs]]
-                 (map (fn [src]
-                        [(name src) (name dest)])
-                      srcs)))))
-
-(def selected-node-id (atom nil))
-
-
-#_(add-watch selected-node-id :selected-node-focus
-           (fn [_ _ prev-selected new-selected-id]
-             (let [{:keys [dummy-graph xy-coordinates node-to-layer]} @layout-result
-                   selected-layer (get node-to-layer new-selected-id)
-                   succs-selected (graph/successors dummy-graph new-selected-id)]
-               (doseq [succ succs-selected]
-                 (when (not= (dec selected-layer) (get node-to-layer succ))
-                   (let [dummy-node {:src new-selected-id :dest succ :layer (dec selected-layer)}
-                         coords (get xy-coordinates dummy-node)]
-                     (println "new-coords" coords)
-                     ))))
-             (println "prev" prev-selected "new" new-selected-id)
-             #_(let [graph-desc-state @graph-desc-atom
-                   nodes-description (get graph-desc-state "nodes")
-                   sizes (get graph-desc-state "sizes")]
-               (remove-highlight-arrows)
-               (when prev-selected
-                 (revert-to-default-positions nodes-description prev-selected))
-               (if new-selected-id
-                 (highlight-selection nodes-description sizes new-selected-id)
-                 (revert-to-normal-display)))))
-
-(defn add-click-listener [ele callback]
-  (gevents/listen
-    ele
-    goog.events.EventType.CLICK
-    callback))
-
-(defn start []
-  #_(add-click-listener
-    (.-body js/document)
-    (fn [_]
-      (reset! selected-node-id nil)))
-  #_(doseq [node-ele (seq (query ".graph-node"))]
-    (add-click-listener node-ele
-                        (fn [evt]
-                          (reset! selected-node-id (.-id node-ele))
-                          (.preventDefault evt)
-                          (.stopPropagation evt)))))
-
-
-
 (defn init []
   (let [size-atom (atom {})
         edges (get-graph-edges example-graph (get-graph-nodes example-graph))]
     (rum/mount (layout size-atom
                        (concat
                          (map (fn [[node-name keywordfn]]
-                                {:node/view (code-node size-atom (name node-name) keywordfn)
+                                {:node/view (code-node size-atom (name node-name) keywordfn) ;(code-val-node size-atom (name node-name) (get example-graph-val node-name) keywordfn) ;(code-node size-atom (name node-name) keywordfn)
                                  :node/id   (name node-name)})
                               example-graph)
                          (map (fn [node-name]
-
-                                {:node/view (input-node size-atom (name node-name))
+                                {:node/view (input-val-node size-atom (name node-name) (get example-graph-val node-name))
                                  :node/id   (name node-name)})
                               (set/difference (into #{}
                                                     (mapcat pfnk/input-schema-keys)
                                                     (vals example-graph))
                                               (into #{}
                                                     (keys example-graph)))))
-                       edges)
+                       edges
+                       ::render-self)
                (. js/document (getElementById "container")))
-    (start)))
+    ))

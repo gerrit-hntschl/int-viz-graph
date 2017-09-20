@@ -8,13 +8,12 @@
                  [com.cemerick/piggieback   "0.2.1"      :scope "test"]
                  [org.clojure/tools.nrepl   "0.2.12"     :scope "test"]
                  [weasel                    "0.7.0"      :scope "test"]
-                 [org.clojure/clojure "1.9.0-alpha13"]
+                 [org.clojure/clojure "1.9.0-alpha15"]
                  [org.clojure/clojurescript "1.9.229"]
                  [org.clojure/test.check "0.9.0"]
                  [prismatic/plumbing "0.5.3"]
-                 [prismatic/schema "1.1.3"]
                  [rum "0.10.4"]
-;                 [aysylu/loom "0.6.0"]
+                 [aysylu/loom "1.0.0"]
                  ])
 
 (require
@@ -49,6 +48,12 @@
   "Simple alias to run application in development mode"
   []
   (comp (development)
+        (run)))
+
+(deftask prod
+  "Simple alias to run application in development mode"
+  []
+  (comp (production)
         (run)))
 
 
